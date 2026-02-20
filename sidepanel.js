@@ -5,6 +5,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const statusDiv = document.getElementById('status');
     const resumePreview = document.getElementById('resumePreview');
     const resumeContent = document.getElementById('resumeContent');
+    const profileSelect = document.getElementById('profileSelect');
+    const deleteProfileBtn = document.getElementById('deleteProfileBtn');
 
     // Summary Panel Elements
     const summaryPanelContainer = document.getElementById('summaryPanelContainer');
@@ -25,22 +27,48 @@ document.addEventListener('DOMContentLoaded', () => {
         Workday: {}
     };
 
-    // Load existing resume and settings
-    chrome.storage.local.get(['resumeData', 'aiEnabled', 'customAtsAnswers'], (result) => {
-        if (result.resumeData) {
-            showStatus('Resume loaded', 'success');
-            enableButtons();
-            updatePreview(result.resumeData);
-        }
+    let savedProfiles = {};
+    let activeProfileName = null;
+
+    // First load to initialize the extension. 
+    // Data is strictly managed through the single source of truth in local storage.
+    chrome.storage.local.get(['resumeData', 'aiEnabled', 'customAtsAnswers', 'savedProfiles', 'activeProfileName', 'normalizedData', 'resumeFile'], (result) => {
+
+        // --- 1. Settings Bootstrapping ---
         if (result.aiEnabled) {
             document.getElementById('aiToggle').checked = true;
         }
         if (result.customAtsAnswers) {
-            // Merge with local state to ensure all keys exist
             customAtsAnswers = { ...customAtsAnswers, ...result.customAtsAnswers };
         }
-        // Initialize the textarea with the default view
         updateCustomAnswersTextarea();
+
+        // --- 2. Profile Bootstrapping ---
+        if (result.savedProfiles) {
+            savedProfiles = result.savedProfiles;
+        }
+
+        // Migrate a legacy install (single profile) to the new multi-profile structure.
+        if (!result.savedProfiles && result.resumeData) {
+            const legacyName = "resume (legacy)";
+            savedProfiles[legacyName] = {
+                resumeData: result.resumeData,
+                normalizedData: result.normalizedData,
+                resumeFile: result.resumeFile
+            };
+            activeProfileName = legacyName;
+
+            // Re-save immediately
+            chrome.storage.local.set({
+                savedProfiles: savedProfiles,
+                activeProfileName: activeProfileName
+            });
+        }
+        else if (result.activeProfileName) {
+            activeProfileName = result.activeProfileName;
+        }
+
+        renderProfileDropdown();
     });
 
     // Handle ATS Selector Change
@@ -85,24 +113,128 @@ document.addEventListener('DOMContentLoaded', () => {
         chrome.storage.local.set({ aiEnabled: e.target.checked });
     });
 
-    // Handle File Upload
+    // Render Profile Dropdown and Swap Storage State
+    function renderProfileDropdown() {
+        const profileNames = Object.keys(savedProfiles);
+
+        profileSelect.innerHTML = ''; // Clear dropdown
+
+        if (profileNames.length === 0) {
+            const option = document.createElement('option');
+            option.value = "";
+            option.textContent = "No Profiles Found - Please Upload";
+            profileSelect.appendChild(option);
+
+            deleteProfileBtn.disabled = true;
+            fillFormBtn.disabled = true;
+            viewResumeBtn.disabled = true;
+
+            const resumeFileName = document.getElementById('resumeFileName');
+            if (resumeFileName) resumeFileName.textContent = "Upload PDF/DOCX";
+
+            return;
+        }
+
+        profileNames.forEach(name => {
+            const option = document.createElement('option');
+            option.value = name;
+            option.textContent = name;
+            if (name === activeProfileName) {
+                option.selected = true;
+            }
+            profileSelect.appendChild(option);
+        });
+
+        deleteProfileBtn.disabled = false;
+
+        // Force the root storage sync to match the actively selected profile
+        syncActiveProfileToRoot();
+    }
+
+    // Handles the heavy-lifting of keeping the root keys exactly matching the chosen profile's data. 
+    // This allows content.js completely agnostic access without knowing about profiles.
+    function syncActiveProfileToRoot() {
+        if (!activeProfileName || !savedProfiles[activeProfileName]) return;
+
+        const profileData = savedProfiles[activeProfileName];
+
+        chrome.storage.local.set({
+            activeProfileName: activeProfileName,
+            resumeData: profileData.resumeData,
+            normalizedData: profileData.normalizedData,
+            resumeFile: profileData.resumeFile
+        }, () => {
+            enableButtons();
+            showStatus(`Profile "${activeProfileName}" Active`, 'success');
+            updatePreview(profileData.resumeData);
+
+            const resumeFileName = document.getElementById('resumeFileName');
+            if (resumeFileName) {
+                resumeFileName.textContent = profileData.resumeFile ? `📎 ${profileData.resumeFile.name}` : "Upload PDF/DOCX";
+            }
+        });
+    }
+
+    // Handle Dropdown Change
+    profileSelect.addEventListener('change', (e) => {
+        activeProfileName = e.target.value;
+        syncActiveProfileToRoot();
+    });
+
+    // Handle Profile Deletion
+    deleteProfileBtn.addEventListener('click', () => {
+        if (activeProfileName && savedProfiles[activeProfileName]) {
+            delete savedProfiles[activeProfileName];
+
+            // Pick a new active profile gracefully
+            const remainingProfiles = Object.keys(savedProfiles);
+            if (remainingProfiles.length > 0) {
+                activeProfileName = remainingProfiles[0];
+            } else {
+                activeProfileName = null;
+                // If completely empty, thoroughly flush root keys
+                chrome.storage.local.remove(['resumeData', 'normalizedData', 'resumeFile']);
+                updatePreview({});
+            }
+
+            chrome.storage.local.set({ savedProfiles: savedProfiles }, () => {
+                renderProfileDropdown();
+            });
+        }
+    });
+
+    // Handle File Upload (JSON Resume Creation/Overwrite)
     resumeInput.addEventListener('change', (event) => {
         const file = event.target.files[0];
         if (file) {
+            // "frontend.json" -> "frontend"
+            const newProfileName = file.name.replace(/\.[^/.]+$/, "");
+
             const reader = new FileReader();
             reader.onload = (e) => {
                 try {
                     const json = JSON.parse(e.target.result);
                     const normalizedData = ResumeProcessor.normalize(json);
 
-                    chrome.storage.local.set({
+                    // Determine if we need to retain an existing DOCX/PDF
+                    let retainedFile = null;
+                    if (savedProfiles[newProfileName] && savedProfiles[newProfileName].resumeFile) {
+                        retainedFile = savedProfiles[newProfileName].resumeFile;
+                    }
+
+                    // Save to the index
+                    savedProfiles[newProfileName] = {
                         resumeData: json,
-                        normalizedData: normalizedData
-                    }, () => {
-                        showStatus('Resume saved successfully!', 'success');
-                        enableButtons();
-                        updatePreview(json);
+                        normalizedData: normalizedData,
+                        resumeFile: retainedFile
+                    };
+
+                    activeProfileName = newProfileName;
+
+                    chrome.storage.local.set({ savedProfiles: savedProfiles }, () => {
+                        renderProfileDropdown(); // Re-renders dropdown and forcibly syncs data to root
                     });
+
                 } catch (error) {
                     showStatus('Error parsing JSON file.', 'error');
                     console.error(error);
@@ -114,19 +246,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Handle Resume File Upload (PDF/DOCX)
     const resumeFileInput = document.getElementById('resumeFileInput');
-    const resumeFileName = document.getElementById('resumeFileName');
 
-    // Load existing resume file name
-    chrome.storage.local.get(['resumeFile'], (result) => {
-        if (result.resumeFile && resumeFileName) {
-            resumeFileName.textContent = `📎 ${result.resumeFile.name}`;
-        }
-    });
-
-    if (resumeFileInput && resumeFileName) {
+    if (resumeFileInput) {
         resumeFileInput.addEventListener('change', (event) => {
             const file = event.target.files[0];
             if (file) {
+                if (!activeProfileName || !savedProfiles[activeProfileName]) {
+                    showStatus('Upload a JSON resume first to create a profile!', 'error');
+                    return;
+                }
+
                 const reader = new FileReader();
                 reader.onload = (e) => {
                     const resumeFileData = {
@@ -136,9 +265,11 @@ document.addEventListener('DOMContentLoaded', () => {
                         size: file.size
                     };
 
-                    chrome.storage.local.set({ resumeFile: resumeFileData }, () => {
-                        showStatus('Resume file uploaded!', 'success');
-                        resumeFileName.textContent = `📎 ${file.name}`;
+                    // Append the file specifically to the Active Profile instead of loosely globally.
+                    savedProfiles[activeProfileName].resumeFile = resumeFileData;
+
+                    chrome.storage.local.set({ savedProfiles: savedProfiles }, () => {
+                        syncActiveProfileToRoot();
                     });
                 };
                 reader.readAsDataURL(file);
