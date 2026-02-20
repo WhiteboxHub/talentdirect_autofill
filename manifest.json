@@ -7,17 +7,43 @@
     "activeTab",
     "storage",
     "scripting",
-    "contextMenus"
+    "contextMenus",
+    "sidePanel"
   ],
   "host_permissions": [
-    "http://localhost:11434/*"
+    "http://localhost:11434/*",
+    "https://*.greenhouse.io/*",
+    "https://*.lever.co/*",
+    "https://*.myworkdayjobs.com/*",
+    "https://*.workday.com/*",
+    "https://boards.greenhouse.io/*",
+    "https://jobs.lever.co/*"
   ],
   "action": {
-    "default_popup": "popup.html"
+    "default_title": "Open side panel"
   },
-  "background": {
-    "service_worker": "background.js"
+  "side_panel": {
+    "default_path": "sidepanel.html"
   },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.greenhouse.io/*",
+        "https://*.lever.co/*",
+        "https://*.myworkdayjobs.com/*",
+        "https://*.workday.com/*",
+        "https://boards.greenhouse.io/*",
+        "https://jobs.lever.co/*"
+      ],
+      "js": [
+        "atsStrategies/genericStrategy.js",
+        "atsStrategies/greenhouseStrategy.js",
+        "atsStrategies/leverStrategy.js",
+        "atsStrategies/workdayStrategy.js",
+        "content.js"
+      ]
+    }
+  ],
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
