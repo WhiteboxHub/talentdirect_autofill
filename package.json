@@ -1,0 +1,21 @@
+{
+  "name": "project-autofill-resume-json-extension",
+  "version": "1.0.0",
+  "description": "A Chrome extension (Manifest V3) that maps a [JSON Resume](https://jsonresume.org/)-style profile onto job application forms. It uses **platform-specific strategies** (Greenhouse, Lever, Workday, and many others) and falls back to a **generic** matcher with confidence scoring and optional prompts for uncertain fields.",
+  "main": "background.js",
+  "scripts": {
+    "test": "node --test 'tests/*.test.js'"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RamanaGR/project-autofill-resume-json-extension.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/RamanaGR/project-autofill-resume-json-extension/issues"
+  },
+  "homepage": "https://github.com/RamanaGR/project-autofill-resume-json-extension#readme"
+}

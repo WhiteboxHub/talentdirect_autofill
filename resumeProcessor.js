@@ -173,6 +173,21 @@ class ResumeProcessor {
             summaryShort = firstSentence ? firstSentence.trim() + "." : summaryLong;
         }
 
+        // Application Preferences (pass through with defaults)
+        const prefs = resumeData.applicationPreferences || {};
+        const preferences = {
+            work_authorization: prefs.work_authorization || "",
+            requires_visa_sponsorship: prefs.requires_visa_sponsorship || "",
+            salary_expectation: prefs.salary_expectation || "",
+            preferred_start_date: prefs.preferred_start_date || "",
+            how_did_you_hear: prefs.how_did_you_hear || "",
+            gender: prefs.gender || "",
+            hispanic_latino: prefs.hispanic_latino || "",
+            veteran_status: prefs.veteran_status || "",
+            disability_status: prefs.disability_status || "",
+            auto_consent: prefs.auto_consent === true
+        };
+
         // Output Index
         return {
             identity: identity,
@@ -184,6 +199,7 @@ class ResumeProcessor {
                 long: summaryLong
             },
             education: resumeData.education || [],
+            preferences: preferences,
             reverse_maps: {
                 skill_to_years: skillToYears,
                 company_to_duration: companyToDuration,

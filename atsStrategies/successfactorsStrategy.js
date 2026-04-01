@@ -7,13 +7,6 @@ class SuccessFactorsStrategy extends GenericStrategy {
         super();
         this.CONFIDENCE_THRESHOLD = 70; 
     }
-
-    execute(normalizedData, aiEnabled) {
-        console.log("Executing SuccessFactorsStrategy...");
-        
-        // Basic fallback execution. Override findValueForInput if specific DOM structures are known.
-        super.execute(normalizedData, aiEnabled);
-    }
 }
 
 // Register with Strategy Registry

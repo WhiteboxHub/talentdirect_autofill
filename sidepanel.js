@@ -19,6 +19,20 @@ document.addEventListener('DOMContentLoaded', () => {
     const customAnswersInput = document.getElementById('customAnswersInput');
     const saveCustomAnswersBtn = document.getElementById('saveCustomAnswersBtn');
 
+    // Queue Progress Elements
+    const queueProgressPanel = document.getElementById('queueProgressPanel');
+    const queueProgressText = document.getElementById('queueProgressText');
+    const queueProgressCount = document.getElementById('queueProgressCount');
+    const queueProgressBar = document.getElementById('queueProgressBar');
+    const skipJobBtn = document.getElementById('skipJobBtn');
+    const cancelQueueBtn = document.getElementById('cancelQueueBtn');
+
+    // Preferences Elements
+    const preferencesToggle = document.getElementById('preferencesToggle');
+    const preferencesBody = document.getElementById('preferencesBody');
+    const preferencesArrow = document.getElementById('preferencesArrow');
+    const savePreferencesBtn = document.getElementById('savePreferencesBtn');
+
     // Keep track of the current tab ID logic executes on 
     let activeTabId = null;
     let customAtsAnswers = {
@@ -116,7 +130,6 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         } catch (error) {
             showStatus('Invalid JSON format.', 'error');
-            console.error('JSON Parse Error:', error);
         }
     });
 
@@ -134,6 +147,65 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('aiToggle').addEventListener('change', (e) => {
         chrome.storage.local.set({ aiEnabled: e.target.checked });
     });
+
+    // --- Preferences Section ---
+    if (preferencesToggle) {
+        preferencesToggle.addEventListener('click', () => {
+            preferencesBody.classList.toggle('hidden');
+            preferencesArrow.textContent = preferencesBody.classList.contains('hidden') ? '\u25BC' : '\u25B2';
+        });
+    }
+
+    function loadPreferencesUI(prefs) {
+        if (!prefs) return;
+        const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
+        setVal('prefWorkAuth', prefs.work_authorization);
+        setVal('prefVisa', prefs.requires_visa_sponsorship);
+        setVal('prefSalary', prefs.salary_expectation);
+        setVal('prefStartDate', prefs.preferred_start_date);
+        setVal('prefHowHeard', prefs.how_did_you_hear);
+        setVal('prefGender', prefs.gender);
+        setVal('prefHispanic', prefs.hispanic_latino);
+        setVal('prefVeteran', prefs.veteran_status);
+        setVal('prefDisability', prefs.disability_status);
+        const autoConsentEl = document.getElementById('prefAutoConsent');
+        if (autoConsentEl) autoConsentEl.checked = prefs.auto_consent !== false;
+    }
+
+    function collectPreferencesFromUI() {
+        const getVal = (id) => { const el = document.getElementById(id); return el ? el.value : ''; };
+        return {
+            work_authorization: getVal('prefWorkAuth'),
+            requires_visa_sponsorship: getVal('prefVisa'),
+            salary_expectation: getVal('prefSalary'),
+            preferred_start_date: getVal('prefStartDate'),
+            how_did_you_hear: getVal('prefHowHeard'),
+            gender: getVal('prefGender'),
+            hispanic_latino: getVal('prefHispanic'),
+            veteran_status: getVal('prefVeteran'),
+            disability_status: getVal('prefDisability'),
+            auto_consent: document.getElementById('prefAutoConsent')?.checked || false
+        };
+    }
+
+    if (savePreferencesBtn) {
+        savePreferencesBtn.addEventListener('click', () => {
+            if (!activeProfileName || !savedProfiles[activeProfileName]) {
+                showStatus('Upload a resume first.', 'error');
+                return;
+            }
+            const prefs = collectPreferencesFromUI();
+            const profile = savedProfiles[activeProfileName];
+            if (profile.resumeData) {
+                profile.resumeData.applicationPreferences = prefs;
+            }
+            profile.normalizedData = ResumeProcessor.normalize(profile.resumeData);
+            chrome.storage.local.set({ savedProfiles: savedProfiles }, () => {
+                syncActiveProfileToRoot();
+                showStatus('Preferences saved!', 'success');
+            });
+        });
+    }
 
     // Render Profile Dropdown and Swap Storage State
     function renderProfileDropdown() {
@@ -190,6 +262,7 @@ document.addEventListener('DOMContentLoaded', () => {
             enableButtons();
             showStatus(`Profile "${activeProfileName}" Active`, 'success');
             updatePreview(profileData.resumeData);
+            loadPreferencesUI(profileData.resumeData?.applicationPreferences);
 
             const resumeFileName = document.getElementById('resumeFileName');
             if (resumeFileName) {
@@ -244,9 +317,14 @@ document.addEventListener('DOMContentLoaded', () => {
             reader.onload = (e) => {
                 try {
                     const json = JSON.parse(e.target.result);
+
+                    const warnings = validateResumeSchema(json);
+                    if (warnings.length > 0) {
+                        showStatus('Warning: ' + warnings.join('; '), 'error');
+                    }
+
                     const normalizedData = ResumeProcessor.normalize(json);
 
-                    // Determine if we need to retain an existing DOCX/PDF
                     let retainedFile = null;
                     if (savedProfiles[newProfileName] && savedProfiles[newProfileName].resumeFile) {
                         retainedFile = savedProfiles[newProfileName].resumeFile;
@@ -267,7 +345,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 } catch (error) {
                     showStatus('Error parsing JSON file.', 'error');
-                    console.error(error);
                 }
             };
             reader.readAsText(file);
@@ -366,15 +443,95 @@ document.addEventListener('DOMContentLoaded', () => {
                         return;
                     }
                     showStatus(`Queue started: ${res.total} job(s). First job opens in a new window.`, 'success');
+                    startQueueProgressPolling();
                 });
             });
         });
     }
 
-    // Listen for fill reports from the content scripts
+    // --- Queue Progress Polling ---
+    let queuePollTimer = null;
+
+    function startQueueProgressPolling() {
+        stopQueueProgressPolling();
+        updateQueueProgress();
+        queuePollTimer = setInterval(updateQueueProgress, 2000);
+    }
+
+    function stopQueueProgressPolling() {
+        if (queuePollTimer) {
+            clearInterval(queuePollTimer);
+            queuePollTimer = null;
+        }
+    }
+
+    function updateQueueProgress() {
+        chrome.runtime.sendMessage({ action: 'queue_status' }, (res) => {
+            if (chrome.runtime.lastError || !res) {
+                hideQueueProgress();
+                return;
+            }
+            if (!res.running) {
+                hideQueueProgress();
+                stopQueueProgressPolling();
+                return;
+            }
+            if (queueProgressPanel) queueProgressPanel.classList.remove('hidden');
+            const idx = (res.index || 0) + 1;
+            const total = res.total || 0;
+            const pct = total > 0 ? Math.round((res.index / total) * 100) : 0;
+            let host = '';
+            try { host = new URL(res.currentUrl).hostname; } catch (_) { host = res.currentUrl || ''; }
+            if (queueProgressText) queueProgressText.textContent = `Job ${idx} of ${total} — ${host}`;
+            if (queueProgressCount) queueProgressCount.textContent = `${idx} / ${total}`;
+            if (queueProgressBar) queueProgressBar.style.width = `${pct}%`;
+        });
+    }
+
+    function hideQueueProgress() {
+        if (queueProgressPanel) queueProgressPanel.classList.add('hidden');
+        if (queueProgressBar) queueProgressBar.style.width = '0%';
+    }
+
+    if (skipJobBtn) {
+        skipJobBtn.addEventListener('click', () => {
+            chrome.runtime.sendMessage({ action: 'skip_current_job' }, (res) => {
+                if (chrome.runtime.lastError || !res || !res.ok) {
+                    showStatus(res?.error || 'Cannot skip right now.', 'error');
+                    return;
+                }
+                showStatus('Skipped to next job.', 'success');
+            });
+        });
+    }
+
+    if (cancelQueueBtn) {
+        cancelQueueBtn.addEventListener('click', () => {
+            chrome.runtime.sendMessage({ action: 'cancel_queue' }, (res) => {
+                if (chrome.runtime.lastError || !res || !res.ok) {
+                    showStatus(res?.error || 'Could not cancel queue.', 'error');
+                    return;
+                }
+                hideQueueProgress();
+                stopQueueProgressPolling();
+                showStatus('Queue cancelled.', 'success');
+            });
+        });
+    }
+
+    // Check if queue is already running on panel open
+    updateQueueProgress();
+    chrome.runtime.sendMessage({ action: 'queue_status' }, (res) => {
+        if (!chrome.runtime.lastError && res && res.running) {
+            startQueueProgressPolling();
+        }
+    });
+
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (request.action === 'fill_report') {
-            activeTabId = sender.tab.id;
+            if (sender && sender.tab && sender.tab.id) {
+                activeTabId = sender.tab.id;
+            }
             renderSummaryTable(request.report);
             sendResponse({ status: 'ok' });
         }
@@ -398,8 +555,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 action: 'apply_edits',
                 edits: editedData
             }, (response) => {
+                if (chrome.runtime.lastError) {
+                    showStatus('Could not apply edits. Refresh the page and retry.', 'error');
+                    return;
+                }
+                if (!response || response.status === 'skipped') {
+                    showStatus('Edits could not be applied to this page.', 'error');
+                    return;
+                }
                 showStatus('Edits applied successfully!', 'success');
             });
+        } else if (!activeTabId) {
+            showStatus('No active tab. Open a job application first.', 'error');
         }
     });
 
@@ -430,17 +597,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // Status Indicator cell
             const tdStatus = document.createElement('td');
-            let statusBadge = '';
 
-            if (item.status === 'filled') {
-                statusBadge = `<span class="badge badge-green">${item.confidence}%</span>`;
-            } else if (item.status === 'low_confidence') {
-                statusBadge = `<span class="badge badge-yellow">${item.confidence}%</span>`;
-            } else if (item.status === 'unmatched_required') {
-                statusBadge = `<span class="badge badge-red">Missed</span>`;
+            if (item.status === 'filled' || item.status === 'low_confidence' || item.status === 'unmatched_required') {
+                const badge = document.createElement('span');
+                if (item.status === 'filled') {
+                    badge.className = 'badge badge-green';
+                    badge.textContent = `${Number(item.confidence) || 0}%`;
+                } else if (item.status === 'low_confidence') {
+                    badge.className = 'badge badge-yellow';
+                    badge.textContent = `${Number(item.confidence) || 0}%`;
+                } else {
+                    badge.className = 'badge badge-red';
+                    badge.textContent = 'Missed';
+                }
+                tdStatus.appendChild(badge);
             }
-
-            tdStatus.innerHTML = statusBadge;
 
             tr.appendChild(tdLabel);
             tr.appendChild(tdValue);
@@ -458,6 +629,24 @@ document.addEventListener('DOMContentLoaded', () => {
             ? 'View Stored Data'
             : 'Hide Data';
     });
+
+    function validateResumeSchema(json) {
+        const warnings = [];
+        if (!json.basics) {
+            warnings.push('Missing "basics" section');
+            return warnings;
+        }
+        if (!json.basics.name) warnings.push('Missing basics.name');
+        if (!json.basics.email) warnings.push('Missing basics.email');
+        if (!json.basics.phone) warnings.push('Missing basics.phone');
+        if (!json.work || !Array.isArray(json.work) || json.work.length === 0) {
+            warnings.push('No work experience entries');
+        }
+        if (!json.skills || !Array.isArray(json.skills) || json.skills.length === 0) {
+            warnings.push('No skills entries');
+        }
+        return warnings;
+    }
 
     function showStatus(msg, type) {
         statusDiv.textContent = msg;

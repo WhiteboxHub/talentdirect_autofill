@@ -167,7 +167,7 @@
                     return;
                 }
                 showListingToast(`Apply queue started: ${urls.length} job(s). First job opens in a new window.`, false);
-                console.log(`AutoFill Extension: Apply queue started (${urls.length} jobs).`);
+                // Queue started notification shown via toast
             }
         );
     }
@@ -216,7 +216,6 @@
         wrap.style.cssText = "position:fixed;bottom:20px;right:20px;z-index:2147483646;padding:0;font-family:system-ui,sans-serif;";
         const btn = createApplyNowButton();
         btn.style.cssText = "margin:0;padding:10px 14px;border:1px solid #4338ca;border-radius:8px;background:#4f46e5;color:#fff;font-weight:600;box-shadow:0 4px 12px rgba(0,0,0,.15);";
-        btn.addEventListener("click", () => startQueueFromListingPage());
         wrap.appendChild(btn);
         document.body.appendChild(wrap);
         injectedFloating = true;

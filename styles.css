@@ -177,6 +177,28 @@ input:checked+.slider:before {
 .toggle-label {
   font-size: 0.875rem;
   color: var(--text-muted);
+  cursor: pointer;
+}
+
+.switch input:focus-visible + .slider {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.action-btn:focus-visible,
+.secondary-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .slider,
+  .slider:before,
+  .upload-btn,
+  .action-btn,
+  .secondary-btn {
+    transition: none;
+  }
 }
 
 /* Utils */

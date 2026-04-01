@@ -1,62 +1,35 @@
 /**
  * workdayStrategy.js
  * Strategy for Workday application forms.
+ * Delegates to GenericStrategy.execute() for fill reports, shadow DOM, and required-field highlighting.
+ * Overrides findPlatformSpecificMatch() for Workday-specific data-automation-id detection.
  */
 class WorkdayStrategy extends GenericStrategy {
     constructor() {
         super();
-        this.CONFIDENCE_THRESHOLD = 70; // Keep standard threshold for workday
+        this.CONFIDENCE_THRESHOLD = 70;
     }
 
-    execute(normalizedData, aiEnabled) {
-        console.log("Executing WorkdayStrategy...");
-
-        // Workday uses dynamic shadow DOMs or heavily nested divs. Basic input selection
-        const inputs = document.querySelectorAll('input, select, textarea');
-
-        inputs.forEach(input => {
-            if (input.type === 'hidden' || input.disabled || input.readOnly) return;
-            if (this.shouldSkipInput(input)) return;
-
-            let match = this.findWorkdaySpecificMatch(input, normalizedData);
-
-            if (!match || !match.value) {
-                match = this.findValueForInput(input, normalizedData);
-            }
-
-            if (match && match.value) {
-                if (match.confidence >= this.CONFIDENCE_THRESHOLD) {
-                    this.setInputValue(input, match.value);
-                } else if (match.confidence >= this.MIN_PROMPT_CONFIDENCE) {
-                    this.promptUserConfirmation(input, match.value, match.confidence);
-                }
-            } else if (aiEnabled) {
-                console.log("AI Enabled: Would attempt to fill unmatched field", input.name || input.id);
-            }
-        });
-
-        console.log("Workday AutoFill pass complete — check side panel Fill Summary; no blocking alert.");
-    }
-
-    findWorkdaySpecificMatch(input, data) {
+    findPlatformSpecificMatch(input, data) {
         const dataAutomationId = (input.getAttribute('data-automation-id') || "").toLowerCase();
 
         if (!dataAutomationId) return null;
 
-        // Common Workday data-automation-ids
-        if (dataAutomationId.includes('legalname-first')) return { value: data.identity.first_name, confidence: 95 };
-        if (dataAutomationId.includes('legalname-last')) return { value: data.identity.last_name, confidence: 95 };
-        if (dataAutomationId.includes('email')) return { value: data.contact.email, confidence: 95 };
-        if (dataAutomationId.includes('phone-number')) return { value: data.contact.phone, confidence: 95 };
-        if (dataAutomationId.includes('address-line1')) return { value: data.contact.address, confidence: 95 };
-        if (dataAutomationId.includes('address-city')) return { value: data.contact.city, confidence: 95 };
-        if (dataAutomationId.includes('address-postal-code')) return { value: data.contact.zip_code, confidence: 95 };
+        if (dataAutomationId.includes('legalname-first')) return { value: data?.identity?.first_name, confidence: 95 };
+        if (dataAutomationId.includes('legalname-last')) return { value: data?.identity?.last_name, confidence: 95 };
+        if (dataAutomationId.includes('legalname-middle')) return { value: data?.identity?.middle_name, confidence: 95 };
+        if (dataAutomationId.includes('email')) return { value: data?.contact?.email, confidence: 95 };
+        if (dataAutomationId.includes('phone-number')) return { value: data?.contact?.phone, confidence: 95 };
+        if (dataAutomationId.includes('address-line1')) return { value: data?.contact?.address, confidence: 95 };
+        if (dataAutomationId.includes('address-city')) return { value: data?.contact?.city, confidence: 95 };
+        if (dataAutomationId.includes('address-state')) return { value: data?.contact?.state, confidence: 90 };
+        if (dataAutomationId.includes('address-postal-code')) return { value: data?.contact?.zip_code, confidence: 95 };
+        if (dataAutomationId.includes('country')) return { value: data?.contact?.country, confidence: 90 };
 
         return null;
     }
 }
 
-// Register with Strategy Registry if available
 if (typeof ATSStrategyRegistry !== 'undefined') {
     ATSStrategyRegistry.register(
         (url, doc) => url.includes('workday.com') || url.includes('myworkdayjobs.com'),
