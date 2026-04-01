@@ -6,8 +6,14 @@
   "permissions": [
     "storage",
     "contextMenus",
-    "sidePanel"
+    "sidePanel",
+    "tabs",
+    "scripting",
+    "windows"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' http://localhost:11434 https://api.openai.com https://api.anthropic.com;"
   },
@@ -35,13 +41,17 @@
     "*://*.teamtailor.com/*",
     "*://*.ultipro.com/*",
     "*://*.workable.com/*",
+    "*://whitebox-learning.com/*",
+    "*://*.whitebox-learning.com/*",
     "http://localhost:11434/*",
     "https://*.greenhouse.io/*",
     "https://*.lever.co/*",
     "https://*.myworkdayjobs.com/*",
     "https://*.workday.com/*",
     "https://boards.greenhouse.io/*",
-    "https://jobs.lever.co/*"
+    "https://jobs.lever.co/*",
+    "https://mongodb.com/*",
+    "https://*.mongodb.com/*"
   ],
   "action": {
     "default_title": "Open side panel"
@@ -50,6 +60,15 @@
     "default_path": "sidepanel.html"
   },
   "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "jobListingsIntegration.js"
+      ],
+      "run_at": "document_idle"
+    },
     {
       "matches": [
         "*://*.adp.com/*",
@@ -75,14 +94,19 @@
         "*://*.teamtailor.com/*",
         "*://*.ultipro.com/*",
         "*://*.workable.com/*",
+        "*://whitebox-learning.com/*",
+        "*://*.whitebox-learning.com/*",
         "https://*.greenhouse.io/*",
         "https://*.lever.co/*",
         "https://*.myworkdayjobs.com/*",
         "https://*.workday.com/*",
         "https://boards.greenhouse.io/*",
-        "https://jobs.lever.co/*"
+        "https://jobs.lever.co/*",
+        "https://mongodb.com/*",
+        "https://*.mongodb.com/*"
       ],
       "js": [
+        "resumeProcessor.js",
         "atsStrategies/strategyRegistry.js",
         "atsStrategies/genericStrategy.js",
         "atsStrategies/adpStrategy.js",
@@ -110,7 +134,8 @@
         "atsStrategies/workableStrategy.js",
         "atsStrategies/workdayStrategy.js",
         "content.js"
-      ]
+      ],
+      "all_frames": true
     }
   ],
   "icons": {

@@ -16,6 +16,7 @@ class GreenhouseStrategy extends GenericStrategy {
 
         inputs.forEach(input => {
             if (input.type === 'hidden' || input.disabled || input.readOnly) return;
+            if (this.shouldSkipInput(input)) return;
 
             let match = this.findGreenhouseSpecificMatch(input, normalizedData);
 
@@ -27,7 +28,7 @@ class GreenhouseStrategy extends GenericStrategy {
             if (match && match.value) {
                 if (match.confidence >= this.CONFIDENCE_THRESHOLD) {
                     this.setInputValue(input, match.value);
-                } else {
+                } else if (match.confidence >= this.MIN_PROMPT_CONFIDENCE) {
                     this.promptUserConfirmation(input, match.value, match.confidence);
                 }
             } else if (aiEnabled) {
@@ -35,10 +36,13 @@ class GreenhouseStrategy extends GenericStrategy {
             }
         });
 
-        alert('Greenhouse AutoFill complete! Please review the form.');
+        console.log("Greenhouse AutoFill pass complete — check side panel; no blocking alert.");
     }
 
     findGreenhouseSpecificMatch(input, data) {
+        const fromSemantics = this.resolveFieldFromHtmlSemantics(input, data);
+        if (fromSemantics) return fromSemantics;
+
         const id = (input.id || "").toLowerCase();
 
         let labelTxt = "";

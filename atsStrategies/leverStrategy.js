@@ -15,6 +15,7 @@ class LeverStrategy extends GenericStrategy {
 
         inputs.forEach(input => {
             if (input.type === 'hidden' || input.disabled || input.readOnly) return;
+            if (this.shouldSkipInput(input)) return;
 
             let match = this.findLeverSpecificMatch(input, normalizedData);
 
@@ -25,7 +26,7 @@ class LeverStrategy extends GenericStrategy {
             if (match && match.value) {
                 if (match.confidence >= this.CONFIDENCE_THRESHOLD) {
                     this.setInputValue(input, match.value);
-                } else {
+                } else if (match.confidence >= this.MIN_PROMPT_CONFIDENCE) {
                     this.promptUserConfirmation(input, match.value, match.confidence);
                 }
             } else if (aiEnabled) {
@@ -33,7 +34,7 @@ class LeverStrategy extends GenericStrategy {
             }
         });
 
-        alert('Lever AutoFill complete! Please review the form.');
+        console.log("Lever AutoFill pass complete — check side panel Fill Summary; no blocking alert.");
     }
 
     findLeverSpecificMatch(input, data) {

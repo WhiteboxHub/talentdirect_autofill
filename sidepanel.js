@@ -1,6 +1,7 @@
 document.addEventListener('DOMContentLoaded', () => {
     const resumeInput = document.getElementById('resumeInput');
     const fillFormBtn = document.getElementById('fillFormBtn');
+    const applyQueueBtn = document.getElementById('applyQueueBtn');
     const viewResumeBtn = document.getElementById('viewResumeBtn');
     const statusDiv = document.getElementById('status');
     const resumePreview = document.getElementById('resumePreview');
@@ -148,6 +149,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             deleteProfileBtn.disabled = true;
             fillFormBtn.disabled = true;
+            if (applyQueueBtn) applyQueueBtn.disabled = true;
             viewResumeBtn.disabled = true;
 
             const resumeFileName = document.getElementById('resumeFileName');
@@ -191,9 +193,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const resumeFileName = document.getElementById('resumeFileName');
             if (resumeFileName) {
-                resumeFileName.textContent = profileData.resumeFile ? `📎 ${profileData.resumeFile.name}` : "Upload PDF/DOCX";
+                resumeFileName.textContent = profileData.resumeFile
+                    ? `File: ${safeFileName(profileData.resumeFile.name)}`
+                    : "Upload PDF/DOCX";
             }
         });
+    }
+
+    function safeFileName(name) {
+        if (!name) return "resume";
+        return String(name).replace(/[^\x20-\x7E]/g, "").trim() || "resume";
     }
 
     // Handle Dropdown Change
@@ -302,21 +311,35 @@ document.addEventListener('DOMContentLoaded', () => {
     fillFormBtn.addEventListener('click', () => {
         chrome.storage.local.get(['resumeData', 'aiEnabled'], (result) => {
             if (result.resumeData) {
-                chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+                resolveTargetTab((activeTab) => {
+                    if (!activeTab) {
+                        showStatus('No active tab found.', 'error');
+                        return;
+                    }
+
+                    const activeUrl = activeTab.url || '';
                     const normalizedData = ResumeProcessor.normalize(result.resumeData);
-                    activeTabId = tabs[0].id; // Save tab ID for reporting
-                    chrome.tabs.sendMessage(activeTabId, {
-                        action: "fill_form",
-                        data: result.resumeData,
-                        normalizedData: normalizedData,
-                        aiEnabled: result.aiEnabled || false,
-                        manual: true
-                    }, (response) => {
+                    activeTabId = activeTab.id; // Save tab ID for reporting
+
+                    chrome.tabs.sendMessage(activeTabId, { action: "ping_content" }, () => {
                         if (chrome.runtime.lastError) {
-                            showStatus('Could not force fill. Try refreshing.', 'error');
-                        } else {
-                            showStatus('Form filling initiated!', 'success');
+                            if (!/^https?:\/\//i.test(activeUrl)) {
+                                showStatus('Open a web page tab (http/https), then click Force Fill.', 'error');
+                                return;
+                            }
+
+                            chrome.runtime.sendMessage({ action: "ensure_content_script", tabId: activeTabId }, (ensureRes) => {
+                                if (chrome.runtime.lastError || !ensureRes || !ensureRes.ok) {
+                                    const host = safeHost(activeUrl);
+                                    showStatus(`Could not attach on ${host}. Refresh page and retry.`, 'error');
+                                    return;
+                                }
+                                triggerFill(activeTabId, result, normalizedData);
+                            });
+                            return;
                         }
+
+                        triggerFill(activeTabId, result, normalizedData);
                     });
                 });
             } else {
@@ -324,6 +347,29 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     });
+
+    // Start Apply queue from links visible on the current tab (Job Listings table)
+    if (applyQueueBtn) {
+        applyQueueBtn.addEventListener('click', () => {
+            resolveTargetTab((tab) => {
+                if (!tab || !tab.id) {
+                    showStatus('No active tab found.', 'error');
+                    return;
+                }
+                chrome.tabs.sendMessage(tab.id, { action: 'collect_and_start_queue' }, (res) => {
+                    if (chrome.runtime.lastError) {
+                        showStatus('Open your Job Listings page in this window, refresh it, then try again.', 'error');
+                        return;
+                    }
+                    if (!res || !res.ok) {
+                        showStatus(res?.error || 'No ATS job links found on this page.', 'error');
+                        return;
+                    }
+                    showStatus(`Queue started: ${res.total} job(s). First job opens in a new window.`, 'success');
+                });
+            });
+        });
+    }
 
     // Listen for fill reports from the content scripts
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -424,6 +470,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function enableButtons() {
         fillFormBtn.disabled = false;
+        if (applyQueueBtn) applyQueueBtn.disabled = false;
         viewResumeBtn.disabled = false;
     }
 
@@ -433,5 +480,66 @@ document.addEventListener('DOMContentLoaded', () => {
             _normalized: normalized,
             _raw: data
         }, null, 2);
+    }
+
+    function triggerFill(tabId, storageResult, normalizedData) {
+        chrome.tabs.sendMessage(tabId, {
+            action: "fill_form",
+            data: storageResult.resumeData,
+            normalizedData: normalizedData,
+            aiEnabled: storageResult.aiEnabled || false,
+            manual: true
+        }, (response) => {
+            if (chrome.runtime.lastError) {
+                showStatus('Could not start fill on this page. Refresh and retry.', 'error');
+            } else if (response && response.status === 'skipped') {
+                showStatus(
+                    'Force Fill does not run on the Job Listings table. Here, click "Apply now" (with that tab selected). To use Force Fill, switch to a tab that shows the real application form (Greenhouse / Lever / etc.) after you click Apply on the job.',
+                    'error'
+                );
+            } else {
+                showStatus('Form filling initiated!', 'success');
+            }
+        });
+    }
+
+    function safeHost(url) {
+        try {
+            return new URL(url).host || "active tab";
+        } catch (_) {
+            return "active tab";
+        }
+    }
+
+    function resolveTargetTab(callback) {
+        chrome.runtime.sendMessage({ action: "get_last_ats_tab" }, (bgRes) => {
+            const lastAtsTabId = bgRes?.lastAtsContext?.tabId;
+            if (lastAtsTabId) {
+                chrome.tabs.get(lastAtsTabId, (tab) => {
+                    if (!chrome.runtime.lastError && tab && /^https?:\/\//i.test(tab.url || '')) {
+                        callback(tab);
+                        return;
+                    }
+                    fallbackResolveTargetTab(callback);
+                });
+                return;
+            }
+            fallbackResolveTargetTab(callback);
+        });
+    }
+
+    function fallbackResolveTargetTab(callback) {
+        chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
+            if (tabs && tabs.length > 0 && /^https?:\/\//i.test(tabs[0].url || '')) {
+                callback(tabs[0]);
+                return;
+            }
+
+            chrome.tabs.query({ lastFocusedWindow: true }, (allTabs) => {
+                const candidate = (allTabs || []).find((t) => t.active && /^https?:\/\//i.test(t.url || ''))
+                    || (allTabs || []).find((t) => /^https?:\/\//i.test(t.url || ''));
+                callback(candidate || null);
+            });
+        });
     }
 });

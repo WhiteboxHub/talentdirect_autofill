@@ -5,12 +5,15 @@
 class GenericStrategy {
     constructor() {
         this.CONFIDENCE_THRESHOLD = 70;
+        /** Below this: do not show Accept/Reject popups (too noisy / wrong field). */
+        this.MIN_PROMPT_CONFIDENCE = 52;
 
         // Field Mapping Dictionary
+        // Avoid bare "name" — it matches unrelated fields (e.g. question_name, Veteran Status siblings).
         this.FIELD_MAPPING = {
-            "identity.first_name": ["first_name", "first name", "fname", "given name"],
+            "identity.first_name": ["first_name", "first name", "fname", "given name", "givenname"],
             "identity.last_name": ["last_name", "last name", "lname", "surname", "family name"],
-            "identity.full_name": ["name", "fullname", "full_name", "applicant name"],
+            "identity.full_name": ["full name", "full_name", "fullname", "legal name", "applicant name", "your name", "complete name"],
             "contact.email": ["email", "e-mail", "mail", "email address"],
             "contact.phone": ["phone", "tel", "mobile", "cell", "contact", "phone number"],
             "contact.portfolio": ["website", "url", "portfolio", "link", "personal website"],
@@ -32,15 +35,123 @@ class GenericStrategy {
         return path.split('.').reduce((acc, part) => acc && acc[part], obj);
     }
 
+    /**
+     * React / Remix (e.g. Greenhouse) controlled inputs ignore plain `el.value = x`.
+     * Use the native prototype setter so the DOM updates and frameworks sync state.
+     */
+    setNativeInputValue(el, value) {
+        if (el == null || value === undefined || value === null) return;
+        const str = String(value);
+        const tag = el.tagName;
+        if (tag === "INPUT") {
+            const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+            if (desc && desc.set) {
+                desc.set.call(el, str);
+                return;
+            }
+        } else if (tag === "TEXTAREA") {
+            const desc = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value");
+            if (desc && desc.set) {
+                desc.set.call(el, str);
+                return;
+            }
+        }
+        el.value = str;
+    }
+
+    dispatchInputEvents(el) {
+        try {
+            el.dispatchEvent(
+                new InputEvent("input", {
+                    bubbles: true,
+                    cancelable: true,
+                    inputType: "insertReplacementText",
+                    data: el.value
+                })
+            );
+        } catch (_) {
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        el.dispatchEvent(new Event("blur", { bubbles: true }));
+    }
+
+    /**
+     * Skip search bars, AG Grid column filters, and other non-application controls.
+     */
+    shouldSkipInput(input) {
+        const type = (input.type || "").toLowerCase();
+        const id = (input.id || "").toLowerCase();
+        const name = (input.name || "").toLowerCase();
+        const ph = (input.placeholder || "").toLowerCase();
+        const aria = (input.getAttribute("aria-label") || "").toLowerCase();
+
+        // Greenhouse / Remix: hidden "required" honeypots — prompts break focus (aria-hidden warnings).
+        if (input.getAttribute("aria-hidden") === "true") return true;
+        if (input.tabIndex === -1 && type === "text" && input.hasAttribute("required")) {
+            const r = input.getBoundingClientRect();
+            if (r.width < 2 && r.height < 2) return true;
+        }
+
+        if (type === "search") return true;
+        if (/^ag-\d+-input$/.test(id) || /^ag-\d+-filter$/.test(id)) return true;
+        if (id.includes("ag-") && (id.includes("filter") || id.includes("-input"))) return true;
+        if (ph.includes("search jobs") || ph === "search..." || ph === "search") return true;
+        if (aria.includes("filter column") || aria.includes("column filter")) return true;
+        if (name === "q" && ph.includes("search")) return true;
+
+        const label = (this.getLabelText(input) || "").toLowerCase();
+        const combined = `${label} ${id} ${name} ${aria}`.toLowerCase();
+        if (input.tagName === "SELECT" || type === "radio" || type === "checkbox") {
+            if (
+                /veteran|gender|ethnic|race|disability|sponsor|authorized to work|legally permitted|country of citizenship|pronoun|sexual orientation|marital|dependents|religion|age|eeo|demographic|voluntary self|identification|protected veteran/i.test(
+                    combined
+                )
+            ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Inputs inside Shadow DOM (common on React/MUI/corporate sites) are invisible to
+     * document.querySelectorAll — walk the tree and open shadow roots.
+     */
+    collectAllFormElements() {
+        const out = [];
+        const seen = new Set();
+        const visit = (node) => {
+            if (!node) return;
+            if (node.nodeType === Node.ELEMENT_NODE) {
+                const el = node;
+                const tag = el.tagName;
+                if (/^INPUT|TEXTAREA|SELECT$/i.test(tag)) {
+                    if (!seen.has(el)) {
+                        seen.add(el);
+                        out.push(el);
+                    }
+                }
+                if (el.shadowRoot) visit(el.shadowRoot);
+                for (const c of el.children) visit(c);
+            } else if (node.nodeType === Node.DOCUMENT_FRAGMENT_NODE) {
+                for (const c of node.childNodes) visit(c);
+            }
+        };
+        if (document.documentElement) visit(document.documentElement);
+        return out;
+    }
+
     execute(normalizedData, aiEnabled) {
         console.log("Executing GenericStrategy...");
-        const inputs = document.querySelectorAll('input, textarea, select');
+        const inputs = this.collectAllFormElements();
 
         // This array will hold the report data for the side panel
         let fillReport = [];
 
         inputs.forEach(input => {
             if (input.type === 'hidden' || input.disabled || input.readOnly) return;
+            if (this.shouldSkipInput(input)) return;
             const match = this.findValueForInput(input, normalizedData);
 
             let status = 'unmatched';
@@ -51,11 +162,12 @@ class GenericStrategy {
                     this.setInputValue(input, match.value, 'green');
                     status = 'filled';
                     finalValue = match.value;
-                } else {
+                } else if (match.confidence >= this.MIN_PROMPT_CONFIDENCE) {
                     this.promptUserConfirmation(input, match.value, match.confidence);
                     status = 'low_confidence';
-                    finalValue = match.value; // It is suggested, though not explicitly set yet
+                    finalValue = match.value;
                 }
+                /* below MIN_PROMPT_CONFIDENCE: skip — avoids wrong popups on every field */
             } else {
                 // Check if it's a required field that was missed
                 if (input.required || input.getAttribute('aria-required') === 'true') {
@@ -83,7 +195,7 @@ class GenericStrategy {
             report: fillReport
         });
 
-        alert('AutoFill complete! Please check the side panel for a summary and review highlighted fields.');
+        console.log("AutoFill complete — check side panel Fill Summary (no blocking alert).");
     }
 
     findCustomAnswer(input, hostname, customAtsAnswers) {
@@ -159,7 +271,9 @@ class GenericStrategy {
 
         let contextScore = 0;
         keywords.forEach(keyword => {
-            if (features.nearby_text && features.nearby_text.includes(keyword.toLowerCase())) {
+            const kw = keyword.toLowerCase();
+            // Nearby text often contains other fields' labels — only use long, specific phrases.
+            if (features.nearby_text && kw.length >= 8 && features.nearby_text.includes(kw)) {
                 contextScore += 5;
             }
         });
@@ -184,7 +298,111 @@ class GenericStrategy {
         return Math.min(Math.round(confidence), 100);
     }
 
+    /**
+     * Modern ATS forms (Greenhouse/Remix, Workday) expose stable hints: autocomplete, name, id.
+     * Use these before fuzzy keyword scoring so the right JSON field always wins.
+     */
+    resolveFieldFromHtmlSemantics(input, normalizedData) {
+        if (!normalizedData) return null;
+
+        const ac = (input.getAttribute("autocomplete") || "").toLowerCase().trim();
+        const acToPath = {
+            "given-name": "identity.first_name",
+            "additional-name": "identity.middle_name",
+            "family-name": "identity.last_name",
+            name: "identity.full_name",
+            email: "contact.email",
+            tel: "contact.phone",
+            "tel-national": "contact.phone",
+            "tel-local": "contact.phone",
+            url: "contact.portfolio",
+            "street-address": "contact.address",
+            "address-line1": "contact.address",
+            "address-line2": "contact.address",
+            "address-level2": "contact.city",
+            "address-level1": "contact.state",
+            "postal-code": "contact.zip_code",
+            country: "contact.country",
+            "country-name": "contact.country"
+        };
+        if (ac && acToPath[ac]) {
+            const value = this.getNestedValue(normalizedData, acToPath[ac]);
+            if (value) return { value, confidence: 99 };
+        }
+
+        const id = (input.id || "").toLowerCase();
+        const name = (input.name || "").toLowerCase();
+        const hay = `${id} ${name}`;
+
+        const pick = (path) => {
+            const value = this.getNestedValue(normalizedData, path);
+            return value ? { value, confidence: 97 } : null;
+        };
+
+        if (
+            /(^|_)(first|fname|given|firstname|first_name)(_|$)|first.?name|given.?name|legalname.?first/i.test(
+                hay
+            )
+        ) {
+            const m = pick("identity.first_name");
+            if (m) return m;
+        }
+        if (/(^|_)(last|lname|surname|family|lastname|last_name)(_|$)|last.?name|family.?name|legalname.?last/i.test(hay)) {
+            const m = pick("identity.last_name");
+            if (m) return m;
+        }
+        if (/(^|_)(middle|mname|middle_name)(_|$)|middle.?name/i.test(hay)) {
+            const m = pick("identity.middle_name");
+            if (m) return m;
+        }
+        if (/full_?name|fullname|legal_?name|applicant_?name/i.test(hay)) {
+            const m = pick("identity.full_name");
+            if (m) return m;
+        }
+        if (/(^|_)(email|e-mail|mail)(_|$)|\bemail\b/i.test(hay)) {
+            const m = pick("contact.email");
+            if (m) return m;
+        }
+        if (/(^|_)(phone|tel|mobile|cell|sms)(_|$)|\bphone\b|telephone/i.test(hay)) {
+            const m = pick("contact.phone");
+            if (m) return m;
+        }
+        if (/linkedin/i.test(hay)) {
+            const m = pick("contact.linkedin");
+            if (m) return m;
+        }
+        if (/github/i.test(hay)) {
+            const m = pick("contact.github");
+            if (m) return m;
+        }
+        if (/(^|_)(city|town|locality|municipality)(_|$)/i.test(hay)) {
+            const m = pick("contact.city");
+            if (m) return m;
+        }
+        if (/(^|_)(state|region|province|territory|statecode|state_code)(_|$)/i.test(hay)) {
+            const m = pick("contact.state");
+            if (m) return m;
+        }
+        if (/(zip|postal|zipcode|zip_code|postcode)/i.test(hay)) {
+            const m = pick("contact.zip_code");
+            if (m) return m;
+        }
+        if (/(^|_)(country|countrycode|country_code|nation)(_|$)/i.test(hay)) {
+            const m = pick("contact.country");
+            if (m) return m;
+        }
+        if (/(portfolio|personal_?website|company_?site)(_|$)/i.test(hay) && /url|link|website/i.test(hay)) {
+            const m = pick("contact.portfolio");
+            if (m) return m;
+        }
+
+        return null;
+    }
+
     findValueForInput(input, normalizedData) {
+        const semantics = this.resolveFieldFromHtmlSemantics(input, normalizedData);
+        if (semantics) return semantics;
+
         const features = this.extractFeatures(input);
 
         // --- 1. Attempt Domain-Specific Dynamic Reverse Lookups ---
@@ -234,7 +452,7 @@ class GenericStrategy {
             return input.parentElement.innerText;
         }
         if (input.id) {
-            const label = document.querySelector(`label[for="${input.id}"]`);
+            const label = document.querySelector(`label[for="${CSS.escape(input.id)}"]`);
             if (label) return label.innerText;
         }
         const labeledBy = input.getAttribute('aria-labelledby');
@@ -242,6 +460,10 @@ class GenericStrategy {
             const labelElement = document.getElementById(labeledBy);
             if (labelElement) return labelElement.innerText;
         }
+        const aria = (input.getAttribute('aria-label') || '').trim();
+        if (aria) return aria;
+        const ph = (input.getAttribute('placeholder') || '').trim();
+        if (ph && ph.length < 120) return ph;
         return '';
     }
 
@@ -263,9 +485,7 @@ class GenericStrategy {
         if (!value && highlightType !== 'red') return;
 
         if (value) {
-            input.value = value;
-
-            if (input.tagName === 'SELECT') {
+            if (input.tagName === "SELECT") {
                 for (let i = 0; i < input.options.length; i++) {
                     if (input.options[i].text.toLowerCase().includes(value.toLowerCase()) ||
                         input.options[i].value.toLowerCase().includes(value.toLowerCase())) {
@@ -273,12 +493,13 @@ class GenericStrategy {
                         break;
                     }
                 }
+                ["input", "change", "blur"].forEach((eventType) => {
+                    input.dispatchEvent(new Event(eventType, { bubbles: true }));
+                });
+            } else {
+                this.setNativeInputValue(input, value);
+                this.dispatchInputEvents(input);
             }
-
-            ['input', 'change', 'blur'].forEach(eventType => {
-                const event = new Event(eventType, { bubbles: true });
-                input.dispatchEvent(event);
-            });
         }
 
         const originalBg = input.style.backgroundColor;
@@ -302,6 +523,7 @@ class GenericStrategy {
     }
 
     highlightUnmatchedRequired(input) {
+        if (input.getAttribute("aria-hidden") === "true") return;
         this.setInputValue(input, null, 'red');
     }
 
@@ -313,8 +535,9 @@ class GenericStrategy {
         input.style.backgroundColor = "#fffbeb";
 
         const container = document.createElement('div');
-        container.style.position = 'absolute';
-        container.style.zIndex = '999999';
+        container.style.position = 'fixed';
+        container.style.zIndex = '2147483647';
+        container.style.pointerEvents = 'auto';
         container.style.backgroundColor = '#ffffff';
         container.style.border = '1px solid #d1d5db';
         container.style.borderRadius = '4px';
@@ -336,6 +559,7 @@ class GenericStrategy {
         buttonRow.style.marginTop = '4px';
 
         const acceptBtn = document.createElement('button');
+        acceptBtn.type = 'button';
         acceptBtn.innerHTML = '✓ Accept';
         acceptBtn.style.padding = '2px 8px';
         acceptBtn.style.backgroundColor = '#10b981';
@@ -345,6 +569,7 @@ class GenericStrategy {
         acceptBtn.style.cursor = 'pointer';
 
         const rejectBtn = document.createElement('button');
+        rejectBtn.type = 'button';
         rejectBtn.innerHTML = '✗ Reject';
         rejectBtn.style.padding = '2px 8px';
         rejectBtn.style.backgroundColor = '#ef4444';
@@ -359,10 +584,16 @@ class GenericStrategy {
         container.appendChild(buttonRow);
 
         const rect = input.getBoundingClientRect();
-        container.style.top = `${window.scrollY + rect.bottom + 4}px`;
-        container.style.left = `${window.scrollX + rect.left}px`;
+        container.style.top = `${rect.bottom + 4}px`;
+        container.style.left = `${Math.max(8, rect.left)}px`;
 
         document.body.appendChild(container);
+
+        const stop = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+        };
 
         const cleanup = () => {
             container.remove();
@@ -370,15 +601,19 @@ class GenericStrategy {
             input.style.backgroundColor = originalBackground;
         };
 
-        acceptBtn.addEventListener('click', (e) => {
-            e.preventDefault();
+        const onAccept = (e) => {
+            stop(e);
             this.setInputValue(input, suggestion);
             cleanup();
-        });
-
-        rejectBtn.addEventListener('click', (e) => {
-            e.preventDefault();
+        };
+        const onReject = (e) => {
+            stop(e);
             cleanup();
-        });
+        };
+
+        acceptBtn.addEventListener('mousedown', stop, true);
+        rejectBtn.addEventListener('mousedown', stop, true);
+        acceptBtn.addEventListener('click', onAccept, true);
+        rejectBtn.addEventListener('click', onReject, true);
     }
 }

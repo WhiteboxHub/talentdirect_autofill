@@ -1,49 +1,74 @@
 # AutoFill Job Applications Extension
 
-A powerful Chrome Extension that fully automates the manual data entry process of job applications. By parsing your standard [JSON Resume](https://jsonresume.org/) schema, this extension intelligently maps and autofills fields on common Applicant Tracking Systems (ATS) like Greenhouse, Lever, and Workday.
+A Chrome extension (Manifest V3) that maps a [JSON Resume](https://jsonresume.org/)-style profile onto job application forms. It uses **platform-specific strategies** (Greenhouse, Lever, Workday, and many others) and falls back to a **generic** matcher with confidence scoring and optional prompts for uncertain fields.
 
-## 🚀 Key Features
+## Key features
 
-*   **100% Automatic Execution**: No need to click "Fill." As soon as you open a supported job application page, the extension intercepts DOM rendering, Single-Page App (SPA) routes, and Mutations to fill forms instantly.
-*   **ATS Strategy Routing**: Implements dedicated matching algorithms for specific job boards:
-    *   **Greenhouse** `(*.greenhouse.io)`
-    *   **Lever** `(*.lever.co)`
-    *   **Workday** `(*.workday.com)`
-*   **Confidence Scoring & Visual Feedback**: Matches are assigned a confidence score based on keywords, nearby context, and HTML types.
-    *   🟢 **Green**: High-confidence match (Auto-filled).
-    *   🟡 **Yellow**: Low-confidence match (Prompts a manual UI confirmation box).
-    *   🔴 **Red**: Required field that could not be matched.
-*   **Chrome Side Panel UI**: Anchor the extension UI to the side of your browser. No more frustrating popups closing when you click away!
-*   **Live Summary & Editing**: After a form is filled, the side panel displays a complete table reporting every answered field. Edit values directly in the panel and click **Apply Edits** to instantly push corrections back to the webpage.
-*   **Custom ATS Overrides**: Encounter repeated questions your resume doesn't answer (e.g., "Will you now or in the future require sponsorship?")? Map custom JSON key-value pairs per ATS platform directly in the extension to automatically bypass them forever.
-*   **Performance Caching**: Normalizes your resume file upon upload and stores the highly optimized object locally using Chrome Storage, ensuring lightning-fast execution on heavy dynamic pages.
+- **Automatic fill on load** — After the page settles, the content script runs (with debouncing). It also reacts to SPA navigation (`pushState` / `replaceState` / `popstate`) and DOM mutations when forms appear late.
+- **ATS routing** — Dedicated logic where it matters; otherwise `GenericStrategy` matches labels, `name` / `id`, `autocomplete`, `aria-label`, and similar (including inputs inside **open Shadow DOM** when present).
+- **Confidence & feedback** — High-confidence fields fill immediately (green highlight). Medium confidence can show an accept/reject prompt. Unmatched required fields may be highlighted in red.
+- **Side panel** — Upload profiles, pick the active profile, **Force Fill Form**, **Apply now** (queue), view **Fill Summary**, and **Apply Edits** to push corrections into the page.
+- **Multiple profiles** — Store several named profiles (JSON and optional PDF/DOCX metadata); the active profile syncs to `chrome.storage.local` for content scripts.
+- **Custom ATS answers** — JSON key/value overrides per platform (e.g. sponsorship / EEO-style questions) under **Platform Overrides**.
+- **Apply queue (“Apply now”)** — From your **Job Listings** table, collect visible rows’ job URLs and walk them in order: first job opens in a **new window** (your listings tab stays open); **later jobs reuse the same tab** in that window via navigation. Advance happens after success is detected (thank-you URL / confirmation-style paths, DOM text, or timeout). Queue state is persisted so the service worker can resume after sleep.
 
-## 🛠️ Installation
+## Supported pages
 
-1.  Clone this repository or download the source code.
-2.  Open Chrome and navigate to `chrome://extensions/`.
-3.  Toggle **Developer mode** in the top right corner.
-4.  Click **Load unpacked**.
-5.  Select the directory containing this project.
+The autofill bundle is injected only on origins listed in `manifest.json` under `content_scripts` → `matches` (and `host_permissions` for scripting). That includes major ATS hosts (e.g. Greenhouse, Lever, Workday, LinkedIn, Indeed, and many enterprise vendors) plus **company career sites** such as `mongodb.com` where explicitly listed.
 
-## 📖 Usage
+If a form is embedded in a **cross-origin iframe**, the iframe’s URL must also be covered; otherwise the script runs only in the top frame.
 
-1.  **Format your Resume**: Create a `resume.json` file following the JSON Resume format. Use the `resume.json` included in this repo as a template.
-2.  **Upload & Store**: Click the extension icon to open the Chrome Side Panel. Click **Upload resume.json** to parse and cache your data securely in local storage.
-3.  *(Optional)* **Custom Answers**: Define static answers for repeating demographic/compliance questions under the "Custom Answers" section.
-4.  **Apply**: Navigate to any Lever, Greenhouse, or Workday job application. Watch the form fill itself!
-5.  **Review**: Expand the **Fill Summary** in the Side Panel, modify any incorrect values, click **Apply Edits**, and submit your application.
+After changing `manifest.json`, reload the extension on `chrome://extensions` and hard-refresh the job page.
 
-## 📂 Project Structure
+## Installation
 
-*   `manifest.json`: Manifest V3 configuration supporting the Side Panel API.
-*   `sidepanel.html` / `styles.css` / `sidepanel.js`: The persistent extension UI, table summary logic, and user configuration panel.
-*   `content.js`: Injected script responsible for listening to DOM loaded, history API, and MutationObserver events, routing to the correct ATS strategy.
-*   `resumeProcessor.js`: Handles flattening and normalizing complex schemas to a 1D internal index.
-*   `atsStrategies/`: Directory containing modular strategy classes for handling different application architectures (`genericStrategy.js`, `greenhouseStrategy.js`, `leverStrategy.js`, `workdayStrategy.js`).
+1. Clone or download this project.
+2. Open Chrome → `chrome://extensions/`.
+3. Enable **Developer mode**.
+4. Click **Load unpacked** and select the `project-autofill-resume-json-extension` folder.
 
-## ✅ To-Do / Roadmap
+## Usage
 
-*   [ ] **AI Integration**: Add support for Ollama (local LLM) or OpenAI API (via the currently disabled AI toggle switch) to dynamically hallucinate answers for unstructured short-answer questions.
-*   [ ] **Generate Cover Letter**: One-click feature to scrape the Job Description and trigger a generative model to paste a custom cover letter.
-*   [ ] **Multiple Profiles**: Support saving multiple resume iterations (e.g., "Frontend Resume", "Backend Resume").
+1. **Prepare data** — Use a JSON Resume–compatible JSON file (see `resume.json` in the repo as a template). You can also attach a PDF/DOCX for display metadata.
+2. **Open the side panel** — Click the extension icon (side panel opens).
+3. **Create a profile** — **Upload resume.json** (and optionally **Upload PDF/DOCX**). Pick the profile from the dropdown to make it active.
+4. **Open a job application** on a supported origin. The form should fill automatically; if not, use **Force Fill Form** (uses the active profile from storage).
+5. **Review** — Check **Fill Summary**, edit cells if needed, then **Apply Edits** and submit the application yourself.
+
+Optional: **Enable AI Fallback** is reserved for future AI-assisted answers (toggle persists in storage).
+
+## Apply queue (“Apply now”)
+
+From a tab that shows your **Job Listings** table (with filters applied as you like):
+
+1. **Side panel:** Click **Apply now** (listings tab must be the active Chrome tab), **or**
+2. **On the page:** Use the purple **Apply Now** control in the toolbar or the floating button when the table is detected.
+
+Then:
+
+- The extension gathers ATS-looking URLs from visible rows (see below).
+- **First** URL opens in a **new browser window**.
+- **Next** URLs load in the **same tab** in that window (no stacking of windows per job).
+- You submit each application manually; when success is detected (URL / thank-you content / timeout), the next job loads.
+
+**Row URL detection:** In order: `data-job-url` on `<tr>`, a column headed like **Job URL**, or the first ATS-like `http(s)` link in the row. You can set `data-job-url="https://..."` on rows if links are hidden.
+
+**Tips:** Reload the extension after updates; hard-refresh (Ctrl+Shift+R) test pages. If the queue seems stuck, check the service worker console for **Queue advance** logs. Close stray windows from old runs if needed.
+
+## Project structure
+
+| Path | Role |
+|------|------|
+| `manifest.json` | MV3 manifest, content script matches, permissions |
+| `background.js` | Apply queue orchestration, storage hydration, programmatic injection |
+| `content.js` | SPA hooks, autofill triggers, queue success detection, messaging |
+| `jobListingsIntegration.js` | Job listings table UI, **Apply Now** on-page actions, toast messages |
+| `sidepanel.html` / `styles.css` / `sidepanel.js` | Side panel UI, profiles, Force Fill, Apply now |
+| `resumeProcessor.js` | Normalize resume JSON for strategies |
+| `atsStrategies/` | Strategy registry and per-ATS modules (`genericStrategy.js`, etc.) |
+
+## Roadmap / ideas
+
+- [ ] **AI answers** — Wire **Enable AI Fallback** to Ollama or a cloud API for unstructured questions.
+- [ ] **Cover letter** — Scrape JD + generate text into a textarea.
+- [ ] Broader **iframe** and **closed shadow** coverage where technically possible.
