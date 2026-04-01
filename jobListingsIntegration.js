@@ -1,4 +1,10 @@
 (() => {
+    if (typeof window !== "undefined" && window.__autofillJobListingsIntegrationLoaded) {
+        return;
+    }
+    if (typeof window !== "undefined") {
+        window.__autofillJobListingsIntegrationLoaded = true;
+    }
     const APPLY_NOW_LABEL = "Apply Now";
     let injectedToolbar = false;
     let injectedFloating = false;
@@ -49,7 +55,8 @@
 
     /**
      * Collect job URLs in table row order (first row → first in queue).
-     * Supports: data-job-url, column header "job_url" / "Job URL", or ATS-like links per row.
+     * With Job URL / Apply column: only that column; empty Apply rows are skipped (queue starts at first row with a link).
+     * Without that column: data-job-url or ATS-like links per row (fallback).
      */
     function extractUrlsFromTable() {
         const urls = [];
@@ -63,18 +70,43 @@
             urls.push(n);
         }
 
+        function normalizeHeaderText(cell) {
+            return (cell.textContent || "").trim().toLowerCase().replace(/\s+/g, " ");
+        }
+
+        /** Job Listings: "Job URL". Candidate dashboard (screenshot): last column "Apply" with external link. */
+        function columnHeaderIsUrlColumn(cell) {
+            const t = normalizeHeaderText(cell);
+            if (/^job\s*url$|^joburl$|^apply\s*url$|^application\s*url$|^apply$/.test(t) || t === "job url") {
+                return true;
+            }
+            const colId = (cell.getAttribute("col-id") || cell.getAttribute("data-field") || "")
+                .trim()
+                .toLowerCase();
+            return /^(apply|joburl|job_url|applyurl)$/.test(colId);
+        }
+
+        function findUrlColumnIndexInHeaderRow(headerRow) {
+            if (!headerRow) return -1;
+            const cells = headerRow.querySelectorAll(
+                "th, td, [role='columnheader'], .ag-header-cell"
+            );
+            for (let i = 0; i < cells.length; i++) {
+                if (columnHeaderIsUrlColumn(cells[i])) return i;
+            }
+            return -1;
+        }
+
         function findJobUrlColumnIndex(table) {
             const headerRow = table.querySelector("thead tr") || table.querySelector("tr");
-            if (!headerRow) return -1;
-            const cells = headerRow.querySelectorAll("th, td");
-            let idx = -1;
-            cells.forEach((cell, i) => {
-                const t = (cell.textContent || "").trim().toLowerCase().replace(/\s+/g, " ");
-                if (/^job\s*url$|^joburl$|^apply\s*url$|^application\s*url$/.test(t) || t === "job url") {
-                    idx = i;
-                }
-            });
-            return idx;
+            return findUrlColumnIndexInHeaderRow(headerRow);
+        }
+
+        /** AG Grid (Whitebox job board): headers are .ag-header-cell; last column is "Apply". */
+        function findAgGridUrlColumnIndex(root) {
+            const headerRow =
+                root.querySelector(".ag-header-row[role='row']") || root.querySelector(".ag-header-row");
+            return findUrlColumnIndexInHeaderRow(headerRow);
         }
 
         const tableColIndex = new Map();
@@ -82,6 +114,46 @@
             const j = findJobUrlColumnIndex(table);
             if (j >= 0) tableColIndex.set(table, j);
         });
+
+        const gridColIndex = new Map();
+        document.querySelectorAll(".ag-root-wrapper, .ag-root").forEach((root) => {
+            if (root.classList.contains("ag-root") && root.closest(".ag-root-wrapper")) return;
+            const j = findAgGridUrlColumnIndex(root);
+            if (j >= 0) gridColIndex.set(root, j);
+        });
+
+        document.querySelectorAll("[role='grid']").forEach((grid) => {
+            if (grid.closest(".ag-root-wrapper, .ag-root")) return;
+            const headerRow = Array.from(grid.querySelectorAll("[role='row']")).find((row) =>
+                row.querySelector("[role='columnheader']")
+            );
+            const j = findUrlColumnIndexInHeaderRow(headerRow);
+            if (j >= 0) gridColIndex.set(grid, j);
+        });
+
+        function cellsForDataRow(row) {
+            const tds = row.querySelectorAll("td");
+            if (tds.length) return tds;
+            return row.querySelectorAll("[role='gridcell'], .ag-cell");
+        }
+
+        /** Only Job URL / Apply cell; never Title. Returns true if a URL was added. */
+        function tryAddFromUrlColumnCell(cell) {
+            if (!cell) return false;
+            const anchors = cell.querySelectorAll("a[href]");
+            for (const a of anchors) {
+                const href = normalizeUrl(a.getAttribute("href"));
+                if (!href || /^(mailto|tel|javascript):/i.test(href)) continue;
+                add(href);
+                return true;
+            }
+            const txt = (cell.textContent || "").trim();
+            if (/^https?:\/\//i.test(txt)) {
+                add(txt);
+                return true;
+            }
+            return false;
+        }
 
         const rowWalker = document.querySelectorAll(
             "table tbody tr, table tbody [role='row'], [role='grid'] [role='row']:not([role='columnheader']), .ag-body [role='row'], .ag-center-cols-container [role='row']"
@@ -106,20 +178,20 @@
             const table = tr.closest("table");
             if (table && tableColIndex.has(table)) {
                 const colIdx = tableColIndex.get(table);
-                const cells = tr.querySelectorAll("td");
+                const cells = cellsForDataRow(tr);
                 const cell = cells[colIdx];
-                if (cell) {
-                    const a = cell.querySelector('a[href^="http"], a[href^="//"]');
-                    if (a) {
-                        add(a.getAttribute("href"));
-                        return;
-                    }
-                    const txt = (cell.textContent || "").trim();
-                    if (/^https?:\/\//i.test(txt)) {
-                        add(txt);
-                        return;
-                    }
-                }
+                tryAddFromUrlColumnCell(cell);
+                return;
+            }
+
+            const gridRoot =
+                tr.closest(".ag-root-wrapper") || tr.closest(".ag-root") || tr.closest("[role='grid']");
+            if (gridRoot && gridColIndex.has(gridRoot)) {
+                const colIdx = gridColIndex.get(gridRoot);
+                const cells = cellsForDataRow(tr);
+                const cell = cells[colIdx];
+                tryAddFromUrlColumnCell(cell);
+                return;
             }
 
             const links = tr.querySelectorAll('a[href^="http"], a[href^="//"]');

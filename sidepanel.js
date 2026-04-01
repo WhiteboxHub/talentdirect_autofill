@@ -425,7 +425,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // Apply queue: collect ATS links from Job Listings table in the active tab
+    // Apply queue: collect ATS links from the job table in the active tab (jobListingsIntegration.js)
     if (applyQueueBtn) {
         applyQueueBtn.addEventListener('click', () => {
             resolveTargetTab((tab) => {
@@ -433,18 +433,47 @@ document.addEventListener('DOMContentLoaded', () => {
                     showStatus('No active tab found.', 'error');
                     return;
                 }
-                chrome.tabs.sendMessage(tab.id, { action: 'collect_and_start_queue' }, (res) => {
-                    if (chrome.runtime.lastError) {
-                        showStatus('Open your Job Listings page in this window, refresh it, then try again.', 'error');
-                        return;
-                    }
+
+                function finishApplyQueue(res) {
                     if (!res || !res.ok) {
-                        showStatus(res?.error || 'No ATS job links found on this page.', 'error');
+                        showStatus(res?.error || 'No apply links found in this page’s table. Scroll rows into view if needed.', 'error');
                         return;
                     }
                     showStatus(`Queue started: ${res.total} job(s). First job opens in a new window.`, 'success');
                     startQueueProgressPolling();
-                });
+                }
+
+                function sendCollectAndStartQueue(afterInject) {
+                    chrome.tabs.sendMessage(tab.id, { action: 'collect_and_start_queue' }, (res) => {
+                        if (chrome.runtime.lastError) {
+                            const url = tab.url || '';
+                            if (!afterInject && /^https?:\/\//i.test(url)) {
+                                chrome.runtime.sendMessage(
+                                    { action: 'ensure_job_listings_script', tabId: tab.id },
+                                    (ensureRes) => {
+                                        if (chrome.runtime.lastError || !ensureRes || !ensureRes.ok) {
+                                            showStatus(
+                                                'Could not attach the job-table helper to this page. Refresh the tab, then try again.',
+                                                'error'
+                                            );
+                                            return;
+                                        }
+                                        setTimeout(() => sendCollectAndStartQueue(true), 150);
+                                    }
+                                );
+                                return;
+                            }
+                            showStatus(
+                                'Open this site in a normal tab (http/https), refresh the page, then click Apply now again.',
+                                'error'
+                            );
+                            return;
+                        }
+                        finishApplyQueue(res);
+                    });
+                }
+
+                sendCollectAndStartQueue(false);
             });
         });
     }

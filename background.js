@@ -223,6 +223,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .catch((err) => sendResponse({ ok: false, error: String(err) }));
     return true;
   }
+
+  if (request.action === "ensure_job_listings_script") {
+    ensureJobListingsIntegration(request.tabId)
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => sendResponse({ ok: false, error: String(err) }));
+    return true;
+  }
 });
 
 async function startApplyQueue(urls) {
@@ -462,6 +469,14 @@ function hydrateQueueFromStorage(done) {
       _log("Queue hydrated from storage");
     }
     done();
+  });
+}
+
+/** Injects job table helper + collect_and_start_queue listener (not part of ensureContentScript stack). */
+async function ensureJobListingsIntegration(tabId) {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["jobListingsIntegration.js"]
   });
 }
 
