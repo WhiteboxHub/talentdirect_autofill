@@ -26,8 +26,17 @@ class GenericStrategy {
             "contact.github": ["github", "github profile", "github url"],
             "summary.short": ["summary", "about", "bio", "description"],
             "employment.current_role": ["title", "position", "role", "job_title", "current role", "current title"],
-            "employment.current_company": ["company", "employer", "current company", "organization"],
-            "employment.years_total": ["total experience", "years experience", "total years"]
+            "employment.current_company": ["company", "employer", "current company", "organization", "most recent employer"],
+            "employment.years_total": ["total experience", "years experience", "total years"],
+            "preferences.work_authorization": ["authorized to work", "legally authorized", "work authorization", "eligible to work"],
+            "preferences.requires_visa_sponsorship": ["visa", "sponsorship", "immigration sponsorship", "require immigration"],
+            "preferences.salary_expectation": ["salary", "compensation", "pay expectation", "salary expectation"],
+            "preferences.preferred_start_date": ["start date", "available to start", "earliest start", "preferred start"],
+            "preferences.how_did_you_hear": ["hear about", "how did you", "heard about this"],
+            "preferences.gender": ["gender"],
+            "preferences.hispanic_latino": ["hispanic", "latino"],
+            "preferences.veteran_status": ["veteran status", "veteran"],
+            "preferences.disability_status": ["disability status", "disability"]
         };
     }
 
@@ -79,14 +88,13 @@ class GenericStrategy {
     /**
      * Skip search bars, AG Grid column filters, and other non-application controls.
      */
-    shouldSkipInput(input) {
+    shouldSkipInput(input, normalizedData) {
         const type = (input.type || "").toLowerCase();
         const id = (input.id || "").toLowerCase();
         const name = (input.name || "").toLowerCase();
         const ph = (input.placeholder || "").toLowerCase();
         const aria = (input.getAttribute("aria-label") || "").toLowerCase();
 
-        // Greenhouse / Remix: hidden "required" honeypots — prompts break focus (aria-hidden warnings).
         if (input.getAttribute("aria-hidden") === "true") return true;
         if (input.tabIndex === -1 && type === "text" && input.hasAttribute("required")) {
             const r = input.getBoundingClientRect();
@@ -100,9 +108,17 @@ class GenericStrategy {
         if (aria.includes("filter column") || aria.includes("column filter")) return true;
         if (name === "q" && ph.includes("search")) return true;
 
+        const hasPreferences = normalizedData?.preferences && (
+            normalizedData.preferences.work_authorization ||
+            normalizedData.preferences.gender ||
+            normalizedData.preferences.auto_consent
+        );
+        if (hasPreferences) return false;
+
         const label = (this.getLabelText(input) || "").toLowerCase();
         const combined = `${label} ${id} ${name} ${aria}`.toLowerCase();
-        if (input.tagName === "SELECT" || type === "radio" || type === "checkbox") {
+        if (input.tagName === "SELECT" || type === "radio" || type === "checkbox" ||
+            input.getAttribute('role') === 'combobox') {
             if (
                 /veteran|gender|ethnic|race|disability|sponsor|authorized to work|legally permitted|country of citizenship|pronoun|sexual orientation|marital|dependents|religion|age|eeo|demographic|voluntary self|identification|protected veteran/i.test(
                     combined
@@ -142,17 +158,108 @@ class GenericStrategy {
         return out;
     }
 
-    execute(normalizedData, aiEnabled) {
-        console.log("Executing GenericStrategy...");
-        const inputs = this.collectAllFormElements();
+    /**
+     * Subclasses override this to add platform-specific field matching.
+     * Called before the generic heuristic matcher. Return { value, confidence } or null.
+     */
+    findPlatformSpecificMatch(input, normalizedData) {
+        return null;
+    }
 
-        // This array will hold the report data for the side panel
+    tryInjectResumeFile(fileInputs) {
+        if (!fileInputs.length) return;
+        chrome.storage.local.get(['resumeFile'], (result) => {
+            const resumeFile = result?.resumeFile;
+            if (!resumeFile || !resumeFile.data) {
+                fileInputs.forEach(fi => {
+                    const wrapper = fi.closest('.file-upload, .field-wrapper, [class*="upload"]') || fi.parentElement;
+                    if (wrapper) {
+                        wrapper.style.outline = '2px solid #ef4444';
+                        wrapper.title = 'Please attach your resume manually';
+                    }
+                });
+                return;
+            }
+            try {
+                const byteString = atob(resumeFile.data.split(',')[1]);
+                const ab = new ArrayBuffer(byteString.length);
+                const ia = new Uint8Array(ab);
+                for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+                const blob = new Blob([ab], { type: resumeFile.type || 'application/pdf' });
+                const file = new File([blob], resumeFile.name || 'resume.pdf', { type: resumeFile.type || 'application/pdf' });
+
+                fileInputs.forEach(fi => {
+                    const label = (this.getLabelText(fi) || fi.id || '').toLowerCase();
+                    if (/cover.?letter/i.test(label)) return;
+                    try {
+                        const dt = new DataTransfer();
+                        dt.items.add(file);
+                        fi.files = dt.files;
+                        fi.dispatchEvent(new Event('change', { bubbles: true }));
+                        fi.dispatchEvent(new Event('input', { bubbles: true }));
+                    } catch (_) {
+                        const wrapper = fi.closest('.file-upload, .field-wrapper') || fi.parentElement;
+                        if (wrapper) {
+                            wrapper.style.outline = '2px solid #ef4444';
+                            wrapper.title = 'Please attach your resume manually';
+                        }
+                    }
+                });
+            } catch (_) {
+                fileInputs.forEach(fi => {
+                    const wrapper = fi.closest('.file-upload, .field-wrapper') || fi.parentElement;
+                    if (wrapper) {
+                        wrapper.style.outline = '2px solid #ef4444';
+                        wrapper.title = 'Please attach your resume manually';
+                    }
+                });
+            }
+        });
+    }
+
+    execute(normalizedData, aiEnabled) {
+        const inputs = this.collectAllFormElements();
+        const autoConsent = normalizedData?.preferences?.auto_consent === true;
         let fillReport = [];
+        const unmatchedForAi = [];
+        const fileInputs = [];
 
         inputs.forEach(input => {
+            if ((input.type || '').toLowerCase() === 'file') {
+                fileInputs.push(input);
+                return;
+            }
             if (input.type === 'hidden' || input.disabled || input.readOnly) return;
-            if (this.shouldSkipInput(input)) return;
-            const match = this.findValueForInput(input, normalizedData);
+            if (this.shouldSkipInput(input, normalizedData)) return;
+
+            const label = this.getLabelText(input) || '';
+            const labelLower = label.toLowerCase();
+
+            // Auto-consent for "I confirm" / privacy / consent fields
+            if (autoConsent && this.isConsentField(labelLower)) {
+                const type = (input.type || '').toLowerCase();
+                if (type === 'checkbox') {
+                    input.checked = true;
+                    this.dispatchInputEvents(input);
+                    fillReport.push({ id: input.id || input.name, label, value: 'checked', confidence: 100, status: 'filled' });
+                    return;
+                }
+                if (this.isReactSelect(input)) {
+                    this.fillReactSelect(input, 'I confirm');
+                    fillReport.push({ id: input.id || input.name, label, value: 'I confirm', confidence: 100, status: 'filled' });
+                    return;
+                }
+                if (input.tagName === 'SELECT') {
+                    this.setInputValue(input, 'I confirm', 'green');
+                    fillReport.push({ id: input.id || input.name, label, value: 'I confirm', confidence: 100, status: 'filled' });
+                    return;
+                }
+            }
+
+            let match = this.findPlatformSpecificMatch(input, normalizedData);
+            if (!match || !match.value) {
+                match = this.findValueForInput(input, normalizedData);
+            }
 
             let status = 'unmatched';
             let finalValue = '';
@@ -167,18 +274,19 @@ class GenericStrategy {
                     status = 'low_confidence';
                     finalValue = match.value;
                 }
-                /* below MIN_PROMPT_CONFIDENCE: skip — avoids wrong popups on every field */
             } else {
-                // Check if it's a required field that was missed
                 if (input.required || input.getAttribute('aria-required') === 'true') {
-                    this.highlightUnmatchedRequired(input);
+                    if (aiEnabled) {
+                        unmatchedForAi.push({ input, label });
+                    } else {
+                        this.highlightUnmatchedRequired(input);
+                    }
                     status = 'unmatched_required';
                 }
             }
 
-            // Only add to report if it's an actionable or matched field
             if (status !== 'unmatched') {
-                const labelText = this.getLabelText(input) || input.name || input.id || input.placeholder || "Unknown Field";
+                const labelText = label || input.name || input.id || input.placeholder || "Unknown Field";
                 fillReport.push({
                     id: input.id || input.name || Math.random().toString(36).substr(2, 9),
                     label: labelText,
@@ -189,13 +297,60 @@ class GenericStrategy {
             }
         });
 
-        // Send the fill report to the sidepanel
+        // AI fallback for unmatched required fields
+        if (aiEnabled && unmatchedForAi.length > 0) {
+            this.fillWithAi(unmatchedForAi, normalizedData, fillReport);
+        }
+
+        if (fileInputs.length > 0) {
+            this.tryInjectResumeFile(fileInputs);
+        }
+
         chrome.runtime.sendMessage({
             action: 'fill_report',
             report: fillReport
         });
+    }
 
-        console.log("AutoFill complete — check side panel Fill Summary (no blocking alert).");
+    isConsentField(labelLower) {
+        return /i confirm|i have read|privacy notice|true and correct|consent|i agree|i acknowledge/i.test(labelLower);
+    }
+
+    fillWithAi(unmatchedFields, normalizedData, fillReport) {
+        const profileSummary = [
+            `Name: ${normalizedData?.identity?.full_name || 'N/A'}`,
+            `Location: ${normalizedData?.contact?.city || ''}, ${normalizedData?.contact?.state || ''}`,
+            `Current Role: ${normalizedData?.employment?.current_role || 'N/A'}`,
+            `Years Experience: ${normalizedData?.employment?.years_total || 0}`
+        ].join('. ');
+
+        unmatchedFields.forEach(({ input, label }) => {
+            const isSelectType = this.isReactSelect(input) || input.tagName === 'SELECT';
+            const prompt = isSelectType
+                ? `You are filling a job application form. The question is: "${label}". The applicant profile: ${profileSummary}. Answer with ONLY the most likely option text (Yes/No or the best dropdown choice). No explanation.`
+                : `You are filling a job application form. The question is: "${label}". The applicant profile: ${profileSummary}. Write a brief, professional answer (1-2 sentences max). No explanation or preamble.`;
+
+            chrome.runtime.sendMessage({ action: 'generate_ai_answer', prompt }, (res) => {
+                if (chrome.runtime.lastError) {
+                    this.highlightUnmatchedRequired(input);
+                    return;
+                }
+                const answer = res?.text;
+                if (!answer || answer.startsWith('[Ollama')) {
+                    this.highlightUnmatchedRequired(input);
+                    return;
+                }
+                const cleaned = answer.trim().replace(/^["']|["']$/g, '');
+                this.setInputValue(input, cleaned, 'green');
+                fillReport.push({
+                    id: input.id || input.name,
+                    label: label,
+                    value: cleaned,
+                    confidence: 75,
+                    status: 'filled'
+                });
+            });
+        });
     }
 
     findCustomAnswer(input, hostname, customAtsAnswers) {
@@ -457,8 +612,12 @@ class GenericStrategy {
         }
         const labeledBy = input.getAttribute('aria-labelledby');
         if (labeledBy) {
-            const labelElement = document.getElementById(labeledBy);
-            if (labelElement) return labelElement.innerText;
+            const parts = labeledBy.trim().split(/\s+/);
+            const text = parts
+                .map(id => { const el = document.getElementById(id); return el ? el.innerText : ""; })
+                .filter(Boolean)
+                .join(" ");
+            if (text) return text;
         }
         const aria = (input.getAttribute('aria-label') || '').trim();
         if (aria) return aria;
@@ -481,11 +640,115 @@ class GenericStrategy {
         return '';
     }
 
+    isReactSelect(input) {
+        if (input.getAttribute('role') === 'combobox' && input.getAttribute('aria-haspopup') === 'true') return true;
+        const parent = input.closest('.select-shell, .select__control, [class*="css-"][class*="-container"]');
+        return !!parent;
+    }
+
+    fillReactSelect(input, value) {
+        if (!value) return;
+        const val = String(value);
+
+        const fireKey = (el, key, extra = {}) => {
+            const base = { key, code: key === 'Enter' ? 'Enter' : `Key${key.toUpperCase()}`,
+                           keyCode: key === 'Enter' ? 13 : key.charCodeAt(0),
+                           which: key === 'Enter' ? 13 : key.charCodeAt(0),
+                           bubbles: true, cancelable: true, ...extra };
+            el.dispatchEvent(new KeyboardEvent('keydown', base));
+            if (key !== 'Enter' && key !== 'ArrowDown') {
+                el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: key, inputType: 'insertText' }));
+            }
+            el.dispatchEvent(new KeyboardEvent('keyup', base));
+        };
+
+        const openMenu = () => {
+            input.focus();
+            input.dispatchEvent(new Event('focus', { bubbles: true }));
+            const ctrl = input.closest('.select__control, [class*="control"]');
+            if (ctrl) {
+                ctrl.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
+                ctrl.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0 }));
+                ctrl.dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0 }));
+            }
+            fireKey(input, 'ArrowDown', { keyCode: 40, which: 40, code: 'ArrowDown' });
+        };
+
+        const typeAndSelect = () => {
+            this.setNativeInputValue(input, '');
+            input.dispatchEvent(new InputEvent('input', { bubbles: true, data: '', inputType: 'deleteContentBackward' }));
+
+            this.setNativeInputValue(input, val);
+            for (const ch of val) {
+                fireKey(input, ch);
+            }
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+
+            const pressEnter = (attempt) => {
+                const menuVisible = this._findReactSelectMenu(input);
+                const options = menuVisible
+                    ? menuVisible.querySelectorAll('[class*="option"], [role="option"]')
+                    : [];
+
+                if (options.length > 0 || attempt >= 4) {
+                    if (options.length > 0) {
+                        const lower = val.toLowerCase();
+                        let targetIdx = 0;
+                        options.forEach((opt, i) => {
+                            const txt = (opt.textContent || '').trim().toLowerCase();
+                            if (txt === lower || txt.startsWith(lower)) { targetIdx = i; }
+                        });
+                        for (let i = 0; i < targetIdx; i++) {
+                            fireKey(input, 'ArrowDown', { keyCode: 40, which: 40, code: 'ArrowDown' });
+                        }
+                    }
+                    setTimeout(() => {
+                        fireKey(input, 'Enter', { keyCode: 13, which: 13, code: 'Enter' });
+                        input.dispatchEvent(new Event('change', { bubbles: true }));
+                    }, 50);
+                } else {
+                    setTimeout(() => pressEnter(attempt + 1), 150);
+                }
+            };
+
+            setTimeout(() => pressEnter(0), 250);
+        };
+
+        openMenu();
+        setTimeout(typeAndSelect, 150);
+    }
+
+    _findReactSelectMenu(input) {
+        const shell = input.closest('.select-shell, [class*="css-"][class*="-container"]');
+        if (shell) {
+            const m = shell.querySelector('[class*="menu"]');
+            if (m) return m;
+        }
+        const ctrl = input.closest('.select__control, [class*="control"]');
+        if (ctrl && ctrl.parentElement) {
+            const m = ctrl.parentElement.querySelector('[class*="menu"]');
+            if (m) return m;
+        }
+        const id = input.id;
+        if (id) {
+            const portal = document.querySelector(`[id*="react-select-${CSS.escape(id)}"][id*="listbox"]`);
+            if (portal && portal.closest('[class*="menu"]')) return portal.closest('[class*="menu"]');
+        }
+        return document.querySelector('[class*="select__menu"], [class*="-menu"][class*="css-"]');
+    }
+
     setInputValue(input, value, highlightType = 'green') {
         if (!value && highlightType !== 'red') return;
 
         if (value) {
-            if (input.tagName === "SELECT") {
+            const type = (input.type || '').toLowerCase();
+
+            if (type === 'checkbox' || type === 'radio') {
+                input.checked = true;
+                this.dispatchInputEvents(input);
+            } else if (this.isReactSelect(input)) {
+                this.fillReactSelect(input, value);
+            } else if (input.tagName === "SELECT") {
                 for (let i = 0; i < input.options.length; i++) {
                     if (input.options[i].text.toLowerCase().includes(value.toLowerCase()) ||
                         input.options[i].value.toLowerCase().includes(value.toLowerCase())) {
@@ -551,7 +814,18 @@ class GenericStrategy {
         container.style.color = '#374151';
 
         const info = document.createElement('div');
-        info.innerHTML = `<strong>Suggested:</strong> ${suggestion}<br/><span style="color: #6b7280; font-size: 10px;">Confidence: ${confidence}%</span>`;
+        const strong = document.createElement('strong');
+        strong.textContent = 'Suggested: ';
+        const valueText = document.createTextNode(suggestion);
+        const br = document.createElement('br');
+        const confSpan = document.createElement('span');
+        confSpan.style.color = '#6b7280';
+        confSpan.style.fontSize = '10px';
+        confSpan.textContent = `Confidence: ${Number(confidence) || 0}%`;
+        info.appendChild(strong);
+        info.appendChild(valueText);
+        info.appendChild(br);
+        info.appendChild(confSpan);
 
         const buttonRow = document.createElement('div');
         buttonRow.style.display = 'flex';
@@ -560,7 +834,7 @@ class GenericStrategy {
 
         const acceptBtn = document.createElement('button');
         acceptBtn.type = 'button';
-        acceptBtn.innerHTML = '✓ Accept';
+        acceptBtn.textContent = '\u2713 Accept';
         acceptBtn.style.padding = '2px 8px';
         acceptBtn.style.backgroundColor = '#10b981';
         acceptBtn.style.color = 'white';
@@ -570,7 +844,7 @@ class GenericStrategy {
 
         const rejectBtn = document.createElement('button');
         rejectBtn.type = 'button';
-        rejectBtn.innerHTML = '✗ Reject';
+        rejectBtn.textContent = '\u2717 Reject';
         rejectBtn.style.padding = '2px 8px';
         rejectBtn.style.backgroundColor = '#ef4444';
         rejectBtn.style.color = 'white';

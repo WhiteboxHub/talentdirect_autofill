@@ -3,8 +3,11 @@
 if (window.__AUTOFILL_RESUME_CONTENT_INIT__) return;
 window.__AUTOFILL_RESUME_CONTENT_INIT__ = true;
 
+const _AF_DEBUG = false;
+const _log = _AF_DEBUG ? console.log.bind(console, '[AutoFill]') : () => {};
+const _warn = _AF_DEBUG ? console.warn.bind(console, '[AutoFill]') : () => {};
+
 let autoFillState = {
-    hasRun: false,
     debouncing: false
 };
 let queueMonitorState = {
@@ -33,7 +36,7 @@ function loadNormalizedDataFromStorage(callback) {
             try {
                 normalized = ResumeProcessor.normalize(result.resumeData);
             } catch (e) {
-                console.warn("AutoFill: ResumeProcessor.normalize failed", e);
+                _warn("ResumeProcessor.normalize failed", e);
             }
         }
         callback(normalized, result.aiEnabled || false);
@@ -51,7 +54,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             sendResponse({ status: "skipped", reason: "not_top_frame" });
             return;
         }
-        console.log("AutoFill: Received manual trigger", request.normalizedData);
+        _log("Received manual trigger");
         const ran = fillForm(request.normalizedData, request.aiEnabled, true);
         sendResponse({ status: ran ? "done" : "skipped" });
         return;
@@ -61,7 +64,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             sendResponse({ status: "skipped", reason: "not_top_frame" });
             return;
         }
-        console.log("AutoFill: Received edits from Side Panel", request.edits);
+        _log("Received edits from Side Panel");
         applyEdits(request.edits);
         sendResponse({ status: "done" });
         return;
@@ -78,10 +81,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 function applyEdits(edits) {
     edits.forEach(edit => {
-        // Attempt to find the input by ID, then name
         let input = document.getElementById(edit.id);
-        if (!input) {
-            input = document.querySelector(`[name="${edit.id}"]`);
+        if (!input && edit.id) {
+            try {
+                input = document.querySelector(`[name="${CSS.escape(edit.id)}"]`);
+            } catch (_) { /* invalid selector */ }
         }
 
         if (input) {
@@ -107,15 +111,13 @@ function attemptAutoFill() {
     autoFillState.debouncing = true;
     setTimeout(() => {
         loadNormalizedDataFromStorage((normalized, aiEnabled) => {
+            autoFillState.debouncing = false;
             if (!normalized) {
-                console.log("AutoFill: No resume in storage — open the side panel and load your JSON.");
                 return;
             }
-            console.log("AutoFill: Running with normalized resume data");
             fillForm(normalized, aiEnabled, false);
         });
-        autoFillState.debouncing = false;
-    }, 1500); // 1.5s debounce to let the SPA settle
+    }, 1500);
 }
 
 /**
@@ -128,7 +130,7 @@ function maybeRearmQueueAfterNavigation() {
         if (chrome.runtime.lastError || !res || !res.active || !res.runId) return;
         queueMonitorState.runId = res.runId;
         queueMonitorState.armed = true;
-        console.log("Apply queue: re-armed success detection for this tab after navigation.");
+        _log("Queue: re-armed success detection after navigation");
         armSubmitDetection();
     });
 }
@@ -215,17 +217,17 @@ function fillForm(normalizedData, aiEnabled, isManualTrigger = false) {
     // Manual "Force Fill" and queue jobs must always run — URL may be short links,
     // company vanity domains, or the form may load after navigation.
     if (!isManualTrigger && !isLikelyApplicationPage()) {
-        console.log("AutoFill: Skipping page - not a likely application form.");
+        _log("Skipping page - not a likely application form");
         return false;
     }
 
     const now = Date.now();
     if (!isManualTrigger && now < fillCooldownUntil) {
-        console.log("AutoFill: Skipped duplicate run (cooldown).");
+        _log("Skipped duplicate run (cooldown)");
         return false;
     }
 
-    console.log("Detected URL:", window.location.href);
+    _log("Fill on:", window.location.hostname);
 
     const strategy = ATSStrategyRegistry.getStrategy(window.location.href, document);
     strategy.execute(normalizedData, aiEnabled);
@@ -328,9 +330,7 @@ function beginQueueJob(request) {
     const tryQueueFill = () => {
         loadNormalizedDataFromStorage((normalized, aiEnabled) => {
             if (!normalized) {
-                console.warn(
-                    "Queue mode: no resume in storage. Open the side panel, load your JSON resume (or pick a profile), then start the queue again."
-                );
+                _warn("Queue mode: no resume in storage");
                 return;
             }
             fillForm(normalized, aiEnabled, true);

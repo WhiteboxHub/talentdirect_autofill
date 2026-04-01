@@ -1,7 +1,8 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
+  <meta charset="UTF-8">
   <title>AutoFill Resume</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -26,7 +27,7 @@
         <select id="profileSelect" style="flex-grow: 1; padding: 6px; border-radius: 4px; border: 1px solid #d1d5db;">
           <option value="">No Profiles Found - Please Upload</option>
         </select>
-        <button id="deleteProfileBtn" class="secondary-btn" title="Delete Profile"
+        <button id="deleteProfileBtn" class="secondary-btn" title="Delete Profile" aria-label="Delete Profile"
           style="padding: 6px; margin: 0; min-width: auto; height: 31px;" disabled>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
             <polyline points="3 6 5 6 21 6"></polyline>
@@ -65,11 +66,11 @@
     <!-- Controls Section -->
     <div class="controls-section">
       <div class="toggle-container">
-        <label class="switch">
+        <label class="switch" for="aiToggle">
           <input type="checkbox" id="aiToggle">
           <span class="slider round"></span>
         </label>
-        <span class="toggle-label">Enable AI Fallback (Soon)</span>
+        <label class="toggle-label" for="aiToggle">Enable AI Fallback (Soon)</label>
       </div>
       <button id="fillFormBtn" class="action-btn" disabled>
         Force Fill Form
@@ -80,9 +81,105 @@
       <p id="applyQueueHint" style="margin: 0; font-size: 11px; color: #6b7280;">
         Open your <strong>Job Listings</strong> tab, then click <strong>Apply now</strong> (or use the purple <strong>Apply Now</strong> button on the page).
       </p>
+
+      <!-- Queue Progress -->
+      <div id="queueProgressPanel" class="hidden" style="padding: 10px; border: 1px solid #e5e7eb; border-radius: 8px; background: #f9fafb;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+          <span id="queueProgressText" style="font-size: 12px; font-weight: 500;">Queue idle</span>
+          <span id="queueProgressCount" style="font-size: 11px; color: #6b7280;">0 / 0</span>
+        </div>
+        <div style="width: 100%; height: 6px; background: #e5e7eb; border-radius: 3px; overflow: hidden; margin-bottom: 8px;">
+          <div id="queueProgressBar" style="height: 100%; width: 0%; background: var(--primary); border-radius: 3px; transition: width 0.3s;"></div>
+        </div>
+        <div style="display: flex; gap: 6px;">
+          <button id="skipJobBtn" type="button" class="secondary-btn" style="flex: 1; padding: 6px; font-size: 11px;">Skip Job</button>
+          <button id="cancelQueueBtn" type="button" class="secondary-btn" style="flex: 1; padding: 6px; font-size: 11px; color: #991b1b; border-color: #fecaca;">Cancel Queue</button>
+        </div>
+      </div>
+
       <button id="viewResumeBtn" class="secondary-btn" disabled>
         View Stored Data
       </button>
+    </div>
+
+    <!-- Application Preferences Section -->
+    <div id="preferencesSection"
+      style="margin-top: 16px; padding: 12px; border: 1px solid #e5e7eb; border-radius: 8px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" id="preferencesToggle">
+        <h3 style="margin: 0; font-size: 14px;">Application Preferences</h3>
+        <span id="preferencesArrow" style="font-size: 12px;">&#9660;</span>
+      </div>
+      <div id="preferencesBody" class="hidden" style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px;">
+        <div>
+          <label for="prefWorkAuth" style="font-size: 12px; display: block; margin-bottom: 2px;">Authorized to work in the US?</label>
+          <select id="prefWorkAuth" style="width: 100%; padding: 5px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 12px;">
+            <option value="">-- Select --</option>
+            <option value="Yes">Yes</option>
+            <option value="No">No</option>
+          </select>
+        </div>
+        <div>
+          <label for="prefVisa" style="font-size: 12px; display: block; margin-bottom: 2px;">Require visa sponsorship?</label>
+          <select id="prefVisa" style="width: 100%; padding: 5px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 12px;">
+            <option value="">-- Select --</option>
+            <option value="Yes">Yes</option>
+            <option value="No">No</option>
+          </select>
+        </div>
+        <div>
+          <label for="prefSalary" style="font-size: 12px; display: block; margin-bottom: 2px;">Salary expectation</label>
+          <input type="text" id="prefSalary" placeholder="e.g. $130,000 - $160,000" style="width: 100%; padding: 5px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 12px; box-sizing: border-box;">
+        </div>
+        <div>
+          <label for="prefStartDate" style="font-size: 12px; display: block; margin-bottom: 2px;">Preferred start date</label>
+          <input type="text" id="prefStartDate" placeholder="e.g. Immediately" style="width: 100%; padding: 5px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 12px; box-sizing: border-box;">
+        </div>
+        <div>
+          <label for="prefHowHeard" style="font-size: 12px; display: block; margin-bottom: 2px;">How did you hear about jobs?</label>
+          <input type="text" id="prefHowHeard" placeholder="e.g. Online job board" style="width: 100%; padding: 5px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 12px; box-sizing: border-box;">
+        </div>
+        <div>
+          <label for="prefGender" style="font-size: 12px; display: block; margin-bottom: 2px;">Gender</label>
+          <select id="prefGender" style="width: 100%; padding: 5px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 12px;">
+            <option value="">-- Select --</option>
+            <option value="Male">Male</option>
+            <option value="Female">Female</option>
+            <option value="Decline To Self Identify">Decline To Self Identify</option>
+          </select>
+        </div>
+        <div>
+          <label for="prefHispanic" style="font-size: 12px; display: block; margin-bottom: 2px;">Hispanic/Latino?</label>
+          <select id="prefHispanic" style="width: 100%; padding: 5px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 12px;">
+            <option value="">-- Select --</option>
+            <option value="Yes">Yes</option>
+            <option value="No">No</option>
+            <option value="Decline To Self Identify">Decline To Self Identify</option>
+          </select>
+        </div>
+        <div>
+          <label for="prefVeteran" style="font-size: 12px; display: block; margin-bottom: 2px;">Veteran status</label>
+          <select id="prefVeteran" style="width: 100%; padding: 5px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 12px;">
+            <option value="">-- Select --</option>
+            <option value="I am not a protected veteran">I am not a protected veteran</option>
+            <option value="I identify as one or more of the classifications of a protected veteran">I identify as a protected veteran</option>
+            <option value="I don't wish to answer">I don't wish to answer</option>
+          </select>
+        </div>
+        <div>
+          <label for="prefDisability" style="font-size: 12px; display: block; margin-bottom: 2px;">Disability status</label>
+          <select id="prefDisability" style="width: 100%; padding: 5px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 12px;">
+            <option value="">-- Select --</option>
+            <option value="Yes, I have a disability, or have had one in the past">Yes, I have a disability</option>
+            <option value="No, I do not have a disability and have not had one in the past">No, I do not have a disability</option>
+            <option value="I do not want to answer">I do not want to answer</option>
+          </select>
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <input type="checkbox" id="prefAutoConsent" checked>
+          <label for="prefAutoConsent" style="font-size: 12px;">Auto-accept privacy/legal consent fields</label>
+        </div>
+        <button id="savePreferencesBtn" class="action-btn" style="width: 100%; margin-top: 4px;">Save Preferences</button>
+      </div>
     </div>
 
     <!-- Custom ATS Answers Section -->
@@ -123,7 +220,7 @@
     </div>
 
     <!-- Status Message -->
-    <div id="status" class="hidden"></div>
+    <div id="status" class="hidden" role="status" aria-live="polite"></div>
 
     <!-- Summary Panel Container -->
     <div id="summaryPanelContainer" class="summary-container hidden">

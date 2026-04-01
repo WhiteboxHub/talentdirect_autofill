@@ -1,0 +1,80 @@
+{
+  "basics": {
+    "name": "Your Full Name",
+    "label": "Your Job Title",
+    "email": "your.email@example.com",
+    "phone": "(555) 123-4567",
+    "url": "https://yourwebsite.com",
+    "summary": "A brief professional summary about yourself, your experience, and your career goals.",
+    "location": {
+      "address": "123 Main St",
+      "postalCode": "10001",
+      "city": "New York",
+      "countryCode": "US",
+      "region": "NY"
+    },
+    "profiles": [
+      {
+        "network": "LinkedIn",
+        "username": "yourname",
+        "url": "https://linkedin.com/in/yourname"
+      },
+      {
+        "network": "GitHub",
+        "username": "yourname",
+        "url": "https://github.com/yourname"
+      }
+    ]
+  },
+  "work": [
+    {
+      "name": "Company Name",
+      "position": "Job Title",
+      "url": "https://company.com",
+      "startDate": "2022-01",
+      "endDate": "",
+      "summary": "Brief description of your role.",
+      "highlights": [
+        "Key accomplishment or responsibility"
+      ]
+    }
+  ],
+  "education": [
+    {
+      "institution": "University Name",
+      "url": "",
+      "area": "Field of Study",
+      "studyType": "Bachelor of Science",
+      "startDate": "2018-09",
+      "endDate": "2022-05",
+      "score": "",
+      "courses": []
+    }
+  ],
+  "skills": [
+    {
+      "name": "Category Name",
+      "level": "",
+      "keywords": ["Skill 1", "Skill 2", "Skill 3"]
+    }
+  ],
+  "certificates": [],
+  "languages": [
+    {
+      "language": "English",
+      "fluency": "Native"
+    }
+  ],
+  "applicationPreferences": {
+    "work_authorization": "Yes",
+    "requires_visa_sponsorship": "No",
+    "salary_expectation": "",
+    "preferred_start_date": "",
+    "how_did_you_hear": "Online job board",
+    "gender": "",
+    "hispanic_latino": "",
+    "veteran_status": "",
+    "disability_status": "",
+    "auto_consent": true
+  }
+}

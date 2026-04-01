@@ -7,13 +7,6 @@ class TaleoStrategy extends GenericStrategy {
         super();
         this.CONFIDENCE_THRESHOLD = 70; 
     }
-
-    execute(normalizedData, aiEnabled) {
-        console.log("Executing TaleoStrategy...");
-        
-        // Basic fallback execution. Override findValueForInput if specific DOM structures are known.
-        super.execute(normalizedData, aiEnabled);
-    }
 }
 
 // Register with Strategy Registry

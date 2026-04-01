@@ -1,4 +1,7 @@
 // Background service worker + apply queue orchestrator
+const _AF_DEBUG = false;
+const _log = _AF_DEBUG ? console.log.bind(console, '[AutoFill BG]') : () => {};
+const _warn = _AF_DEBUG ? console.warn.bind(console, '[AutoFill BG]') : () => {};
 
 const queueRuntime = {
   running: false,
@@ -19,10 +22,10 @@ let lastAtsContext = {
 
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
-  .catch((error) => console.error(error));
+  .catch(() => {});
 
 chrome.runtime.onInstalled.addListener(() => {
-  console.log("Extension installed");
+  _log("Extension installed");
   chrome.contextMenus.create({
     id: "generateAIAnswer",
     title: "Generate Answer with AI",
@@ -154,6 +157,30 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return;
   }
 
+  if (request.action === "cancel_queue") {
+    hydrateQueueFromStorage(() => {
+      if (queueRuntime.running) {
+        completeQueue();
+        sendResponse({ ok: true, reason: "cancelled" });
+      } else {
+        sendResponse({ ok: false, error: "No queue running." });
+      }
+    });
+    return true;
+  }
+
+  if (request.action === "skip_current_job") {
+    hydrateQueueFromStorage(() => {
+      if (queueRuntime.running && queueRuntime.waitingForSubmit) {
+        void moveNext("user_skip");
+        sendResponse({ ok: true });
+      } else {
+        sendResponse({ ok: false, error: "Not waiting on a job." });
+      }
+    });
+    return true;
+  }
+
   if (request.action === "ensure_content_script") {
     ensureContentScript(request.tabId)
       .then(() => sendResponse({ ok: true }))
@@ -229,7 +256,7 @@ function postQueueBeginToContent(tabId) {
           .then(() => {
             chrome.tabs.sendMessage(tabId, payload, () => {
               if (chrome.runtime.lastError) {
-                console.warn("Queue begin failed after inject:", chrome.runtime.lastError.message);
+                _warn("Queue begin failed after inject:", chrome.runtime.lastError.message);
                 void moveNext("content_unavailable");
                 return;
               }
@@ -237,7 +264,7 @@ function postQueueBeginToContent(tabId) {
             });
           })
           .catch((err) => {
-            console.warn("Queue ensureContentScript failed:", err);
+            _warn("Queue ensureContentScript failed:", err);
             void moveNext("content_unavailable");
           });
         return;
@@ -266,7 +293,7 @@ async function moveNext(reason) {
   queueRuntime.waitingForSubmit = false;
 
   const completedUrl = queueRuntime.urls[queueRuntime.index];
-  console.log(`Queue advance: ${reason} -> ${completedUrl}`);
+  _log(`Queue advance: ${reason}`);
   queueRuntime.index += 1;
   persistQueueState();
 
@@ -300,7 +327,7 @@ async function moveNext(reason) {
       }
     }
   } catch (err) {
-    console.error("Queue navigate to next URL failed:", err);
+    _warn("Queue navigate to next URL failed:", err);
     try {
       const win = await chrome.windows.create({
         url: nextUrl,
@@ -314,14 +341,14 @@ async function moveNext(reason) {
         persistQueueState();
       }
     } catch (err2) {
-      console.error("Queue fallback open window failed:", err2);
+      _warn("Queue fallback open window failed:", err2);
     }
   }
 }
 
 function completeQueue() {
   clearQueueTimer();
-  console.log("Apply queue completed.");
+  _log("Apply queue completed");
   queueRuntime.running = false;
   queueRuntime.waitingForSubmit = false;
   persistQueueState();
@@ -379,7 +406,7 @@ function hydrateQueueFromStorage(done) {
       queueRuntime.tabId = s.tabId;
       queueRuntime.windowId = s.windowId;
       queueRuntime.waitingForSubmit = !!s.waitingForSubmit;
-      console.log("Apply queue: hydrated from storage (service worker was inactive).");
+      _log("Queue hydrated from storage");
     }
     done();
   });
@@ -424,15 +451,25 @@ async function ensureContentScript(tabId) {
 }
 
 async function callOllama(prompt) {
-  const res = await fetch("http://localhost:11434/api/generate", {
-    method: "POST",
-    body: JSON.stringify({
-      model: "llama2",
-      prompt: prompt,
-      stream: false
-    })
-  });
+  try {
+    const res = await fetch("http://localhost:11434/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "llama2",
+        prompt: prompt,
+        stream: false
+      })
+    });
 
-  const data = await res.json();
-  return data.response;
+    if (!res.ok) {
+      return `[Ollama error: HTTP ${res.status}]`;
+    }
+
+    const data = await res.json();
+    return data?.response || "[No response from Ollama]";
+  } catch (err) {
+    _warn("callOllama failed:", err);
+    return `[Ollama unavailable: ${err.message}]`;
+  }
 }
