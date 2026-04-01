@@ -1,10 +1,10 @@
 {
   "basics": {
-    "name": "Ramana Gangarao",
+    "name": "Alex Johnson",
     "label": "AI Engineer",
-    "email": "ramanagangarao04@gmail.com",
-    "phone": "(754) 275-7752",
-    "url": "https://ramanagr.github.io/",
+    "email": "alex.johnson@example.com",
+    "phone": "(555) 123-4567",
+    "url": "https://alexjohnson.dev/",
     "summary": "AI Engineer with 9+ years of software engineering experience, specializing in agentic AI systems, RAG pipelines, knowledge graphs, and MLOps. Experienced in building production-grade retrieval and generation systems using LangGraph, Google ADK, and cloud-native architectures on GCP and AWS. Proven track record in designing multi-agent orchestration workflows, vector search infrastructure, and end-to-end ML deployment pipelines.",
     "location": {
       "address": "",
@@ -16,19 +16,19 @@
     "profiles": [
       {
         "network": "LinkedIn",
-        "username": "ramana-gangarao",
-        "url": "https://linkedin.com/in/ramana-gangarao"
+        "username": "alex-johnson-ai",
+        "url": "https://linkedin.com/in/alex-johnson-ai"
       },
       {
         "network": "GitHub",
-        "username": "RamanaGR",
-        "url": "https://github.com/RamanaGR"
+        "username": "alexjohnson-dev",
+        "url": "https://github.com/alexjohnson-dev"
       }
     ]
   },
   "work": [
     {
-      "name": "Optum",
+      "name": "HealthTech Corp",
       "position": "AI Engineer",
       "url": "",
       "startDate": "2025-12",
@@ -42,16 +42,15 @@
         "Built knowledge graphs and domain ontologies for contractual data to model entities, obligations, dependencies, and semantic relationships across documents.",
         "Developed agentic retrieval workflows and intelligent agents to query and traverse the knowledge graph, improving contextual retrieval and reasoning over contract data.",
         "Created an MCP server on top of the knowledge graph to expose graph aware tools and structured retrieval capabilities for agent driven workflows.",
-        "Built backend services with FastAPI and developed user facing interfaces with Lovable.dev to enable contract exploration, search, and AI assisted interactions.",
+        "Built backend services with FastAPI and developed user facing interfaces to enable contract exploration, search, and AI assisted interactions.",
         "Established evaluation workflows for retrievers and generation systems using DeepEval and related methods to measure retrieval quality, answer quality, and system reliability.",
-        "Tested agent workflows with a focus on memory management, including both short term and long term memory patterns, using Google ADK.",
         "Implemented parallel agent execution, supervisor patterns, ReAct loops, and agentic AI workflows to support multi step reasoning and coordinated task execution.",
         "Supported fine tuning efforts for BERT and RoBERTa based models on Vertex AI, partnering with data scientists to improve task specific model performance.",
         "Contributed to MLOps workflows on Google Cloud by supporting training, deployment, evaluation, and lifecycle management for AI and machine learning systems."
       ]
     },
     {
-      "name": "Innovapath INC - TalentScreen",
+      "name": "TalentAI Inc",
       "position": "AI Engineer",
       "url": "",
       "startDate": "2025-01",
@@ -63,23 +62,21 @@
         "Designed and implemented multi agent workflows in LangGraph, with specialized agents for conversation management, retrieval, candidate matching, routing, and orchestration.",
         "Developed MCP based tool calling infrastructure by creating custom MCP servers and reusable tools to support agent actions, external integrations, and workflow execution.",
         "Built a document ingestion and preprocessing pipeline using Unstructured.io and Docling to clean source content, normalize formats, extract metadata, and prepare enterprise documents for downstream retrieval.",
-        "Implemented semantic chunking in Docling with overlap strategies to preserve context across chunks, and generated embeddings using Amazon Titan Text Embeddings for high quality retrieval.",
+        "Implemented semantic chunking with overlap strategies to preserve context across chunks, and generated embeddings using Amazon Titan Text Embeddings for high quality retrieval.",
         "Engineered a Milvus based vector search layer using collections, metadata filtering, keyword search, and hybrid retrieval; configured HNSW indexing for low latency approximate nearest neighbor search at scale.",
-        "Improved retrieval quality by implementing cross encoder reranking and post retrieval evaluation metrics, including F1 score at K and related ranking measures, to track relevance and system performance.",
+        "Improved retrieval quality by implementing cross encoder reranking and post retrieval evaluation metrics to track relevance and system performance.",
         "Built a query optimization pipeline with query rewriting and balancing techniques to improve retrieval precision and generation quality; integrated Presidio for PII detection and redaction.",
         "Implemented semantic query caching with Redis vector storage to identify similar historical queries and reuse optimized retrieval paths, reducing latency and compute cost.",
         "Applied advanced prompting strategies, including few shot prompting, dynamic prompting, and structured reasoning patterns, and used Promptfoo to test and compare prompt performance across tasks.",
-        "Used Amazon Bedrock with Claude Sonnet for text generation, and implemented prompt caching to improve response time and reduce inference costs.",
         "Developed CI and CD based evaluation pipelines with DeepEval to validate faithfulness, context recall, answer relevance, retrieval quality, and regression safety across RAG and agent workflows before release.",
         "Implemented guardrails for safety and compliance using AWS services and Hugging Face libraries to detect and control PII exposure, toxicity, and tone related issues.",
-        "Built proof of concept pipelines with Sentence Transformers and ChromaDB to benchmark retrieval strategies, embedding performance, and open source alternatives.",
         "Developed backend APIs, API Gateway integrations, and a React frontend to deliver recruiter facing and candidate facing workflows through a scalable full stack application.",
         "Integrated Langfuse for end to end observability, including prompt versioning, tool call tracing, retrieval context tracking, agent transition monitoring, and latency analysis."
       ]
     },
     {
-      "name": "Wipro Limited",
-      "position": "Developer Analyst I / MLOps",
+      "name": "GlobalSoft Solutions",
+      "position": "Developer Analyst / MLOps",
       "url": "",
       "startDate": "2021-09",
       "endDate": "2024-08",
@@ -98,7 +95,7 @@
       ]
     },
     {
-      "name": "INNOVAPATH IT Solutions PVT Ltd",
+      "name": "TechBridge IT Services",
       "position": "Software Engineer",
       "url": "",
       "startDate": "2016-09",
@@ -115,7 +112,7 @@
   ],
   "education": [
     {
-      "institution": "Atlantis University",
+      "institution": "Pacific Coast University",
       "url": "",
       "area": "Information Technology",
       "studyType": "Master of Science",
@@ -125,7 +122,7 @@
       "courses": []
     },
     {
-      "institution": "Keshav Memorial Institute of Technology - JNTUH",
+      "institution": "National Institute of Technology",
       "url": "",
       "area": "Electronics and Instrumentation Engineering",
       "studyType": "Bachelor of Technology",
