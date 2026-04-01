@@ -7,41 +7,28 @@ class GenericStrategy {
         this.CONFIDENCE_THRESHOLD = 70;
         /** Below this: do not show Accept/Reject popups (too noisy / wrong field). */
         this.MIN_PROMPT_CONFIDENCE = 52;
-
-        // Field Mapping Dictionary
-        // Avoid bare "name" — it matches unrelated fields (e.g. question_name, Veteran Status siblings).
-        this.FIELD_MAPPING = {
-            "identity.first_name": ["first_name", "first name", "fname", "given name", "givenname"],
-            "identity.last_name": ["last_name", "last name", "lname", "surname", "family name"],
-            "identity.full_name": ["full name", "full_name", "fullname", "legal name", "applicant name", "your name", "complete name"],
-            "contact.email": ["email", "e-mail", "mail", "email address"],
-            "contact.phone": ["phone", "tel", "mobile", "cell", "contact", "phone number"],
-            "contact.portfolio": ["website", "url", "portfolio", "link", "personal website"],
-            "contact.address": ["address", "street", "address line 1"],
-            "contact.city": ["city", "town"],
-            "contact.zip_code": ["zip", "postal", "code", "zip code"],
-            "contact.state": ["state", "province", "region"],
-            "contact.country": ["country", "country format"],
-            "contact.linkedin": ["linkedin", "linkedin url", "linkedin profile"],
-            "contact.github": ["github", "github profile", "github url"],
-            "summary.short": ["summary", "about", "bio", "description"],
-            "employment.current_role": ["title", "position", "role", "job_title", "current role", "current title"],
-            "employment.current_company": ["company", "employer", "current company", "organization", "most recent employer"],
-            "employment.years_total": ["total experience", "years experience", "total years"],
-            "preferences.work_authorization": ["authorized to work", "legally authorized", "work authorization", "eligible to work"],
-            "preferences.requires_visa_sponsorship": ["visa", "sponsorship", "immigration sponsorship", "require immigration"],
-            "preferences.salary_expectation": ["salary", "compensation", "pay expectation", "salary expectation"],
-            "preferences.preferred_start_date": ["start date", "available to start", "earliest start", "preferred start"],
-            "preferences.how_did_you_hear": ["hear about", "how did you", "heard about this"],
-            "preferences.gender": ["gender"],
-            "preferences.hispanic_latino": ["hispanic", "latino"],
-            "preferences.veteran_status": ["veteran status", "veteran"],
-            "preferences.disability_status": ["disability status", "disability"]
-        };
     }
 
+    /**
+     * Resolves dotted paths including numeric indices (education.0.institution).
+     */
     getNestedValue(obj, path) {
-        return path.split('.').reduce((acc, part) => acc && acc[part], obj);
+        if (!obj || path == null) return undefined;
+        const parts = String(path).split(".");
+        let cur = obj;
+        for (const p of parts) {
+            if (cur == null) return undefined;
+            cur = cur[p];
+        }
+        return cur;
+    }
+
+    /** Data-driven registry from normalized JSON + fieldSynonyms.js (see fieldRegistry.js). */
+    getFieldRegistry(normalizedData) {
+        if (typeof buildFieldRegistry === "function") {
+            return buildFieldRegistry(normalizedData, typeof AUTOFILL_FIELD_SYNONYMS !== "undefined" ? AUTOFILL_FIELD_SYNONYMS : {});
+        }
+        return [];
     }
 
     /**
@@ -392,7 +379,7 @@ class GenericStrategy {
             input_type: (input.type || "text").toLowerCase(),
             normalized_combined: (typeof ResumeProcessor !== 'undefined') ?
                 ResumeProcessor.normalizeText(
-                    `${input.name || ""} ${input.id || ""} ${this.getLabelText(input)} ${input.getAttribute('aria-label') || ""}`
+                    `${input.name || ""} ${input.id || ""} ${this.getLabelText(input)} ${input.getAttribute('aria-label') || ""} ${input.placeholder || ""}`
                 ) : ""
         };
     }
@@ -435,9 +422,14 @@ class GenericStrategy {
         contextScore = Math.min(contextScore, 15);
 
         let typeScore = 0;
-        const isEmailField = fieldKey === 'email';
-        const isPhoneField = fieldKey === 'phone';
-        const isUrlField = fieldKey.includes('url') || fieldKey.includes('linkedin') || fieldKey.includes('github') || fieldKey === 'website';
+        const isEmailField = fieldKey === "email" || /\.email$/.test(fieldKey);
+        const isPhoneField = fieldKey === "phone" || /\.phone$/.test(fieldKey);
+        const isUrlField =
+            fieldKey.includes("url") ||
+            fieldKey.includes("linkedin") ||
+            fieldKey.includes("github") ||
+            fieldKey.includes("portfolio") ||
+            fieldKey === "website";
 
         if (isEmailField && features.input_type === 'email') typeScore = 15;
         else if (isPhoneField && features.input_type === 'tel') typeScore = 15;
@@ -460,7 +452,35 @@ class GenericStrategy {
     resolveFieldFromHtmlSemantics(input, normalizedData) {
         if (!normalizedData) return null;
 
+        const id = (input.id || "").toLowerCase();
+        const name = (input.name || "").toLowerCase();
+        const aria = (input.getAttribute("aria-label") || "").toLowerCase();
+        const ph = (input.getAttribute("placeholder") || "").toLowerCase();
+        const labelLower = (this.getLabelText(input) || "").toLowerCase();
+        /** Used for url + social fields — many sites use autocomplete="url" for LinkedIn, not portfolio */
+        // fullHay: autocomplete="url" often applies to LinkedIn; id/name may be generic.
+        const fullHay = `${id} ${name} ${aria} ${ph} ${labelLower}`;
+        const hay = `${id} ${name}`;
+
+        const pick = (path) => {
+            const value = this.getNestedValue(normalizedData, path);
+            return value ? { value, confidence: 97 } : null;
+        };
+
         const ac = (input.getAttribute("autocomplete") || "").toLowerCase().trim();
+        if (ac === "url") {
+            if (/linkedin/i.test(fullHay)) {
+                const m = pick("contact.linkedin");
+                if (m) return { ...m, confidence: 99 };
+            }
+            if (/github/i.test(fullHay)) {
+                const m = pick("contact.github");
+                if (m) return { ...m, confidence: 99 };
+            }
+            const port = this.getNestedValue(normalizedData, "contact.portfolio");
+            if (port) return { value: port, confidence: 99 };
+        }
+
         const acToPath = {
             "given-name": "identity.first_name",
             "additional-name": "identity.middle_name",
@@ -470,7 +490,6 @@ class GenericStrategy {
             tel: "contact.phone",
             "tel-national": "contact.phone",
             "tel-local": "contact.phone",
-            url: "contact.portfolio",
             "street-address": "contact.address",
             "address-line1": "contact.address",
             "address-line2": "contact.address",
@@ -484,15 +503,6 @@ class GenericStrategy {
             const value = this.getNestedValue(normalizedData, acToPath[ac]);
             if (value) return { value, confidence: 99 };
         }
-
-        const id = (input.id || "").toLowerCase();
-        const name = (input.name || "").toLowerCase();
-        const hay = `${id} ${name}`;
-
-        const pick = (path) => {
-            const value = this.getNestedValue(normalizedData, path);
-            return value ? { value, confidence: 97 } : null;
-        };
 
         if (
             /(^|_)(first|fname|given|firstname|first_name)(_|$)|first.?name|given.?name|legalname.?first/i.test(
@@ -522,11 +532,11 @@ class GenericStrategy {
             const m = pick("contact.phone");
             if (m) return m;
         }
-        if (/linkedin/i.test(hay)) {
+        if (/linkedin/i.test(fullHay)) {
             const m = pick("contact.linkedin");
             if (m) return m;
         }
-        if (/github/i.test(hay)) {
+        if (/github/i.test(fullHay)) {
             const m = pick("contact.github");
             if (m) return m;
         }
@@ -584,18 +594,17 @@ class GenericStrategy {
             }
         }
 
-        // --- 2. Standard Heuristic Matching ---
+        // --- 2. Registry-driven heuristic matching (JSON paths + synonyms, not hardcoded per-field in code) ---
         let bestMatch = { value: null, confidence: 0 };
+        const registry = this.getFieldRegistry(normalizedData);
 
-        for (const [fieldKey, keywords] of Object.entries(this.FIELD_MAPPING)) {
+        for (const entry of registry) {
+            const fieldKey = entry.path;
+            const keywords = entry.keywords || [];
             const confidence = this.calculateConfidence(features, keywords, fieldKey);
 
-            if (confidence > bestMatch.confidence) {
-                const value = this.getNestedValue(normalizedData, fieldKey);
-
-                if (value) {
-                    bestMatch = { value, confidence };
-                }
+            if (confidence > bestMatch.confidence && entry.value) {
+                bestMatch = { value: entry.value, confidence };
             }
         }
 

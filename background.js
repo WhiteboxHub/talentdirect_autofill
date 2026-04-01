@@ -50,6 +50,11 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       return;
     }
 
+    if (queueRuntime.waitingForSubmit && u && isQueueBlockedOrUnusableUrl(u)) {
+      void advanceQueue("blocked_url", { requireWaiting: true });
+      return;
+    }
+
     // Thank-you URL but we already cleared waiting (e.g. moveNext in progress) — do not
     // call postQueueBegin here or we re-arm submit state and can double-advance / open extra windows.
     if (u && isQueueSuccessUrl(u)) {
@@ -71,6 +76,12 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
         if (uFresh && isQueueSuccessUrl(uFresh)) {
           return;
         }
+        if (uFresh && isQueueBlockedOrUnusableUrl(uFresh)) {
+          void advanceQueue("blocked_url", {
+            requireWaiting: queueRuntime.waitingForSubmit ? true : false
+          });
+          return;
+        }
         postQueueBeginToContent(tabId);
       });
     });
@@ -84,8 +95,25 @@ function isQueueSuccessUrl(u) {
     /\/thank[-_/]?you/i.test(u) ||
     /\/success(?:\/|\?|#|$)/i.test(u) ||
     /\/application[-_]?(?:submitted|complete)/i.test(u) ||
-    /[?&](?:submitted|success)=/i.test(u)
+    /[?&](?:submitted|success)=/i.test(u) ||
+    // Workday (myworkdayjobs.com / workday.com) often uses these instead of /thank-you
+    /\/applyconfirmation/i.test(u) ||
+    /\/apply-confirmation/i.test(u) ||
+    /\/candidateconfirmation/i.test(u) ||
+    /\/applicationstatus\/submitted/i.test(u)
   );
+}
+
+/** Maintenance / outage / unusable pages — skip job without waiting for submit_timeout */
+function isQueueBlockedOrUnusableUrl(u) {
+  if (!u) return false;
+  if (/community\.workday\.com/i.test(u) && /maintenance/i.test(u)) return true;
+  if (/maintenance-page/i.test(u)) return true;
+  if (/\/maintenance(?:\/|\?|#|$)/i.test(u)) return true;
+  if (/\/service-unavailable/i.test(u)) return true;
+  if (/\/503(?:\/|\?|#|$)/i.test(u)) return true;
+  if (/\/50[24](?:\/|\?|#|$)/i.test(u)) return true;
+  return false;
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -106,6 +134,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "queue_submit_detected") {
     hydrateQueueFromStorage(() => {
       handleSubmitDetected(request, sender?.tab?.id);
+      sendResponse({ ok: true });
+    });
+    return true;
+  }
+
+  if (request.action === "queue_skip_job") {
+    hydrateQueueFromStorage(() => {
+      handleQueueSkipJob(request, sender?.tab?.id);
       sendResponse({ ok: true });
     });
     return true;
@@ -217,7 +253,7 @@ async function startApplyQueue(urls) {
 function scheduleQueueSubmitTimer() {
   clearQueueTimer();
   queueRuntime.timer = setTimeout(() => {
-    void moveNext("submit_timeout");
+    void advanceQueue("submit_timeout", { requireWaiting: true });
   }, queueRuntime.timeoutMs);
 }
 
@@ -256,16 +292,16 @@ function postQueueBeginToContent(tabId) {
           .then(() => {
             chrome.tabs.sendMessage(tabId, payload, () => {
               if (chrome.runtime.lastError) {
-                _warn("Queue begin failed after inject:", chrome.runtime.lastError.message);
-                void moveNext("content_unavailable");
+                console.warn("Queue begin failed after inject:", chrome.runtime.lastError.message);
+                void advanceQueue("content_unavailable", { requireWaiting: true });
                 return;
               }
               scheduleQueueSubmitTimer();
             });
           })
           .catch((err) => {
-            _warn("Queue ensureContentScript failed:", err);
-            void moveNext("content_unavailable");
+            console.warn("Queue ensureContentScript failed:", err);
+            void advanceQueue("content_unavailable", { requireWaiting: true });
           });
         return;
       }
@@ -281,14 +317,27 @@ function handleSubmitDetected(request, senderTabId) {
   if (senderTabId !== queueRuntime.tabId) return;
   if (!queueRuntime.waitingForSubmit) return;
   if (request.runId !== queueRuntime.runId) return;
-  void moveNext("submitted");
+  void advanceQueue("submitted", { requireWaiting: true });
 }
 
-async function moveNext(reason) {
+function handleQueueSkipJob(request, senderTabId) {
   if (!queueRuntime.running) return;
-  if (!queueRuntime.waitingForSubmit) {
-    return;
-  }
+  if (senderTabId !== queueRuntime.tabId) return;
+  if (!queueRuntime.waitingForSubmit) return;
+  if (request.runId !== queueRuntime.runId) return;
+  void advanceQueue("blocked_dom", { requireWaiting: true });
+}
+
+/**
+ * @param {string} reason
+ * @param {{ requireWaiting?: boolean }} [options] — if requireWaiting is false, advance even when
+ *   waitingForSubmit is still false (e.g. first paint landed on a maintenance URL before queue_begin).
+ */
+async function advanceQueue(reason, options = {}) {
+  const allowWithoutWaiting = options.requireWaiting === false;
+  if (!queueRuntime.running) return;
+  if (!allowWithoutWaiting && !queueRuntime.waitingForSubmit) return;
+
   clearQueueTimer();
   queueRuntime.waitingForSubmit = false;
 
@@ -344,6 +393,10 @@ async function moveNext(reason) {
       _warn("Queue fallback open window failed:", err2);
     }
   }
+}
+
+async function moveNext(reason) {
+  return advanceQueue(reason, { requireWaiting: true });
 }
 
 function completeQueue() {
@@ -415,6 +468,8 @@ function hydrateQueueFromStorage(done) {
 async function ensureContentScript(tabId) {
   const files = [
     "resumeProcessor.js",
+    "atsStrategies/fieldSynonyms.js",
+    "atsStrategies/fieldRegistry.js",
     "atsStrategies/strategyRegistry.js",
     "atsStrategies/genericStrategy.js",
     "atsStrategies/adpStrategy.js",

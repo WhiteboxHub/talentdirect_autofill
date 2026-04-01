@@ -7,10 +7,9 @@ A Chrome extension (Manifest V3) that maps a [JSON Resume](https://jsonresume.or
 - **Automatic fill on load** — After the page settles, the content script runs (with debouncing). It also reacts to SPA navigation (`pushState` / `replaceState` / `popstate`) and DOM mutations when forms appear late.
 - **ATS routing** — Dedicated logic where it matters; otherwise `GenericStrategy` matches labels, `name` / `id`, `autocomplete`, `aria-label`, and similar (including inputs inside **open Shadow DOM** when present).
 - **Confidence & feedback** — High-confidence fields fill immediately (green highlight). Medium confidence can show an accept/reject prompt. Unmatched required fields may be highlighted in red.
-- **Side panel** — Upload profiles, pick the active profile, **Force Fill Form**, **Apply now** (queue), view **Fill Summary**, and **Apply Edits** to push corrections into the page.
+- **Side panel** — Upload profiles, pick the active profile, **Force Fill Form**, **Apply now** (multi-job queue from a listings table), **Fill Summary**, and **Apply Edits** to push corrections into the page.
 - **Multiple profiles** — Store several named profiles (JSON and optional PDF/DOCX metadata); the active profile syncs to `chrome.storage.local` for content scripts.
 - **Custom ATS answers** — JSON key/value overrides per platform (e.g. sponsorship / EEO-style questions) under **Platform Overrides**.
-- **Apply queue (“Apply now”)** — From your **Job Listings** table, collect visible rows’ job URLs and walk them in order: first job opens in a **new window** (your listings tab stays open); **later jobs reuse the same tab** in that window via navigation. Advance happens after success is detected (thank-you URL / confirmation-style paths, DOM text, or timeout). Queue state is persisted so the service worker can resume after sleep.
 
 ## Supported pages
 
@@ -39,32 +38,20 @@ Optional: **Enable AI Fallback** is reserved for future AI-assisted answers (tog
 
 ## Apply queue (“Apply now”)
 
-From a tab that shows your **Job Listings** table (with filters applied as you like):
-
-1. **Side panel:** Click **Apply now** (listings tab must be the active Chrome tab), **or**
-2. **On the page:** Use the purple **Apply Now** control in the toolbar or the floating button when the table is detected.
-
-Then:
-
-- The extension gathers ATS-looking URLs from visible rows (see below).
-- **First** URL opens in a **new browser window**.
-- **Next** URLs load in the **same tab** in that window (no stacking of windows per job).
-- You submit each application manually; when success is detected (URL / thank-you content / timeout), the next job loads.
-
-**Row URL detection:** In order: `data-job-url` on `<tr>`, a column headed like **Job URL**, or the first ATS-like `http(s)` link in the row. You can set `data-job-url="https://..."` on rows if links are hidden.
-
-**Tips:** Reload the extension after updates; hard-refresh (Ctrl+Shift+R) test pages. If the queue seems stuck, check the service worker console for **Queue advance** logs. Close stray windows from old runs if needed.
+On a tab that shows your **Job Listings** table (with job URLs in rows or a **Job URL** column): click **Apply now** in the side panel, or the purple **Apply Now** on the page when injected. The extension collects visible ATS-looking links, opens the first in a **new window**, then navigates that tab through the rest after each application completes (success URL / timeout / skip rules in `background.js` + `content.js`). Incomplete field fill is improved separately via `fieldRegistry` / strategies—not by removing the queue.
 
 ## Project structure
 
 | Path | Role |
 |------|------|
 | `manifest.json` | MV3 manifest, content script matches, permissions |
-| `background.js` | Apply queue orchestration, storage hydration, programmatic injection |
+| `background.js` | Storage hydration, programmatic injection, optional queue helpers |
 | `content.js` | SPA hooks, autofill triggers, queue success detection, messaging |
-| `jobListingsIntegration.js` | Job listings table UI, **Apply Now** on-page actions, toast messages |
+| `jobListingsIntegration.js` | Optional on-page **Apply Now** + message bridge for side panel queue start |
 | `sidepanel.html` / `styles.css` / `sidepanel.js` | Side panel UI, profiles, Force Fill, Apply now |
 | `resumeProcessor.js` | Normalize resume JSON for strategies |
+| `atsStrategies/fieldSynonyms.js` | Default keyword bundles per canonical JSON path (editable) |
+| `atsStrategies/fieldRegistry.js` | Builds matchable `{ path, value, keywords }[]` from normalized data |
 | `atsStrategies/` | Strategy registry and per-ATS modules (`genericStrategy.js`, etc.) |
 
 ## Roadmap / ideas

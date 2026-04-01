@@ -44,7 +44,13 @@ function loadNormalizedDataFromStorage(callback) {
 }
 
 // Listen for messages from popup (Manual fallback or Edits)
+// With manifest "all_frames": true, this script runs in every iframe. Only the top frame may
+// call sendResponse — Chrome allows one response per tabs.sendMessage; duplicate responses
+// cause persistent runtime/connection errors in the service worker and side panel.
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (window !== window.top) {
+        return;
+    }
     if (request.action === "ping_content") {
         sendResponse({ status: "ready" });
         return;
@@ -237,6 +243,7 @@ function fillForm(normalizedData, aiEnabled, isManualTrigger = false) {
 
 let lastHeartbeatAt = 0;
 function sendAtsHeartbeat() {
+    if (window !== window.top) return;
     const now = Date.now();
     if (now - lastHeartbeatAt < 2000) return;
     lastHeartbeatAt = now;
@@ -374,6 +381,30 @@ function clearQueueSubmitWatch() {
     queueSubmitWatchCleanup = null;
 }
 
+/** Keep patterns aligned with background.js isQueueBlockedOrUnusableUrl when updating either file. */
+function isQueueBlockedPageUrl(u) {
+    if (!u) return false;
+    const str = String(u).toLowerCase();
+    if (/community\.workday\.com/i.test(str) && /maintenance/i.test(str)) return true;
+    if (/maintenance-page/i.test(str)) return true;
+    if (/\/maintenance(?:\/|\?|#|$)/i.test(str)) return true;
+    if (/\/service-unavailable/i.test(str)) return true;
+    if (/\/503(?:\/|\?|#|$)/i.test(str)) return true;
+    if (/\/50[24](?:\/|\?|#|$)/i.test(str)) return true;
+    return false;
+}
+
+function matchesBlockedPageDom(combined) {
+    const patterns = [
+        /workday is currently unavailable/i,
+        /we are experiencing a service interruption/i,
+        /experiencing a service interruption/i,
+        /service is temporarily unavailable/i,
+        /site (is )?under maintenance/i
+    ];
+    return patterns.some((re) => re.test(combined));
+}
+
 function armSubmitDetection() {
     if (!queueMonitorState.armed) return;
     clearQueueSubmitWatch();
@@ -381,10 +412,27 @@ function armSubmitDetection() {
     const successPatterns = [
         /application submitted/i,
         /thank you for applying/i,
+        /thank you for your interest/i,
         /your application has been submitted/i,
         /your application has been received/i,
         /we('ve| have) received your application/i,
-        /application complete/i
+        /we have received your application/i,
+        /application complete/i,
+        /successfully submitted/i,
+        /you have successfully applied/i,
+        /your application (was|is) successfully submitted/i,
+        /candidacy.*submitted/i,
+        // Duplicate / cooldown — same outcome for the queue: nothing left to do on this job; advance
+        /your application was already submitted/i,
+        /application was already submitted/i,
+        /you (have|had) already (applied|submitted)/i,
+        /you('ve| have) already applied/i,
+        /already applied (for|to) (this|the) (job|role|position)/i,
+        /duplicate (application|submission)/i,
+        /we received your previous application/i,
+        /submit a new application.*after your last application/i,
+        /cannot submit another application/i,
+        /unable to submit.*already/i
     ];
 
     // Narrow URL matches — avoid substring "submitted" inside unrelated words (e.g. "resubmitted").
@@ -393,7 +441,12 @@ function armSubmitDetection() {
         /\/thank[-_/]?you/i,
         /\/success(?:\/|\?|#|$)/i,
         /\/application[-_]?(?:submitted|complete)/i,
-        /[?&](?:submitted|success)=/i
+        /[?&](?:submitted|success)=/i,
+        // Workday post-apply URLs (see background.js isQueueSuccessUrl)
+        /\/applyconfirmation/i,
+        /\/apply-confirmation/i,
+        /\/candidateconfirmation/i,
+        /\/applicationstatus\/submitted/i
     ];
 
     let finished = false;
@@ -404,6 +457,31 @@ function armSubmitDetection() {
         notifyQueueSubmitDetected(signal);
     };
 
+    const finishBlocked = (signal) => {
+        if (finished || !queueMonitorState.armed) return;
+        finished = true;
+        clearQueueSubmitWatch();
+        notifyQueueSkipDetected(signal);
+    };
+
+    const checkBlockedHeuristic = () => {
+        if (!queueMonitorState.armed || !queueMonitorState.runId) return false;
+        const href = (window.location.href || "").toLowerCase();
+        if (isQueueBlockedPageUrl(href)) {
+            finishBlocked("blocked_url");
+            return true;
+        }
+        const combined =
+            (document.title || "") +
+            "\n" +
+            (document.body?.innerText || "").slice(0, 15000);
+        if (matchesBlockedPageDom(combined)) {
+            finishBlocked("blocked_dom");
+            return true;
+        }
+        return false;
+    };
+
     const checkSuccessHeuristic = () => {
         if (!queueMonitorState.armed || !queueMonitorState.runId) return false;
         if (urlSuccessPatterns.some((re) => re.test(window.location.href))) {
@@ -411,11 +489,18 @@ function armSubmitDetection() {
             return true;
         }
         const bodyText = (document.body?.innerText || "").slice(0, 20000);
-        if (successPatterns.some((re) => re.test(bodyText))) {
+        const titleText = document.title || "";
+        const pageText = `${titleText}\n${bodyText}`;
+        if (successPatterns.some((re) => re.test(pageText))) {
             finish("dom_signal");
             return true;
         }
         return false;
+    };
+
+    const runChecks = () => {
+        if (checkBlockedHeuristic()) return true;
+        return checkSuccessHeuristic();
     };
 
     // Do NOT advance the queue on Submit click or form "submit" — that fires before validation and
@@ -424,7 +509,7 @@ function armSubmitDetection() {
     // page (and background.js matches /confirmation on the same tab).
     const cleanups = [];
 
-    if (checkSuccessHeuristic()) {
+    if (runChecks()) {
         cleanups.forEach((fn) => fn());
         return;
     }
@@ -438,7 +523,7 @@ function armSubmitDetection() {
     }
 
     const observer = new MutationObserver(() => {
-        checkSuccessHeuristic();
+        runChecks();
     });
     observer.observe(observerRoot, { childList: true, subtree: true, characterData: true });
     cleanups.push(() => observer.disconnect());
@@ -448,7 +533,7 @@ function armSubmitDetection() {
             clearInterval(urlPoll);
             return;
         }
-        checkSuccessHeuristic();
+        runChecks();
     }, 1200);
     cleanups.push(() => clearInterval(urlPoll));
 
@@ -464,6 +549,25 @@ function notifyQueueSubmitDetected(signal) {
         chrome.runtime.sendMessage(
             {
                 action: "queue_submit_detected",
+                runId: queueMonitorState.runId,
+                signal
+            },
+            () => {
+                void chrome.runtime.lastError;
+            }
+        );
+    } catch (_) {
+        void 0;
+    }
+}
+
+function notifyQueueSkipDetected(signal) {
+    queueMonitorState.armed = false;
+    clearQueueSubmitWatch();
+    try {
+        chrome.runtime.sendMessage(
+            {
+                action: "queue_skip_job",
                 runId: queueMonitorState.runId,
                 signal
             },

@@ -72,15 +72,38 @@ class ResumeProcessor {
         // 2. Contact & Links
         const getProfile = (network) => {
             const p = profiles.find(pf => this.normalizeText(pf.network).includes(network));
-            return p ? p.url : "";
+            return p ? (p.url || "").trim() : "";
         };
+
+        const trimUrl = (u) => (typeof u === "string" ? u.trim() : "");
+        const urlField = trimUrl(basics.url);
+        const websiteField = trimUrl(basics.website);
+        const isLinkedInUrl = (u) => u && /linkedin\.com/i.test(u);
+        const isGitHubUrl = (u) => u && /github\.com/i.test(u);
+
+        let linkedin = getProfile("linkedin");
+        let github = getProfile("github");
+        if (!linkedin) {
+            if (isLinkedInUrl(urlField)) linkedin = urlField;
+            else if (isLinkedInUrl(websiteField)) linkedin = websiteField;
+        }
+        if (!github) {
+            if (isGitHubUrl(urlField)) github = urlField;
+            else if (isGitHubUrl(websiteField)) github = websiteField;
+        }
+
+        let portfolio = "";
+        if (urlField && !isLinkedInUrl(urlField) && !isGitHubUrl(urlField)) portfolio = urlField;
+        else if (websiteField && !isLinkedInUrl(websiteField) && !isGitHubUrl(websiteField)) {
+            portfolio = websiteField;
+        }
 
         const contact = {
             email: basics.email || "",
             phone: basics.phone ? basics.phone.replace(/[^\d+]/g, "") : "", // Keep only digits and +
-            linkedin: getProfile('linkedin'),
-            github: getProfile('github'),
-            portfolio: basics.url || "",
+            linkedin,
+            github,
+            portfolio,
 
             // Location included in contact for convenience
             address: location.address || "",
@@ -107,7 +130,7 @@ class ResumeProcessor {
                 const diffMonths = Math.ceil(diffTime / (1000 * 60 * 60 * 24 * 30.44));
                 totalMonths += diffMonths;
 
-                const normCompany = this.normalizeText(job.name);
+                const normCompany = this.normalizeText(job.company || job.name || "");
                 const normTitle = this.normalizeText(job.position);
 
                 // Track durations
@@ -128,10 +151,29 @@ class ResumeProcessor {
 
         const employment = {
             current_role: currentWork.position || basics.label || "",
-            current_company: currentWork.name || "",
+            current_company: currentWork.company || currentWork.name || "",
             years_total: Math.round(totalMonths / 12),
             roles_by_year: rolesByYear
         };
+
+        /** Indexed work history for field registry (education-style paths). JSON Resume uses `company`. */
+        const work_history = (work || []).map((w) => ({
+            name: w.company || w.name || "",
+            position: w.position || "",
+            location: w.location || "",
+            startDate: w.startDate || "",
+            endDate: w.endDate || "",
+            summary:
+                w.summary ||
+                (Array.isArray(w.highlights) ? w.highlights.filter(Boolean).join("\n") : "") ||
+                ""
+        }));
+
+        const projects = (resumeData.projects || []).map((p) => ({
+            name: (p && p.name) || "",
+            description: (p && p.description) || "",
+            url: (p && p.url) || ""
+        }));
 
         // 4. Skills & Reverse Maps
         const normalizedSkillSet = new Set();
@@ -193,6 +235,8 @@ class ResumeProcessor {
             identity: identity,
             contact: contact,
             employment: employment,
+            work_history: work_history,
+            projects: projects,
             skills: skillsData,
             summary: {
                 short: summaryShort,

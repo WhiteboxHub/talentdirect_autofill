@@ -425,7 +425,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // Start Apply queue from links visible on the current tab (Job Listings table)
+    // Apply queue: collect ATS links from Job Listings table in the active tab
     if (applyQueueBtn) {
         applyQueueBtn.addEventListener('click', () => {
             resolveTargetTab((tab) => {
@@ -683,7 +683,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 showStatus('Could not start fill on this page. Refresh and retry.', 'error');
             } else if (response && response.status === 'skipped') {
                 showStatus(
-                    'Force Fill does not run on the Job Listings table. Here, click "Apply now" (with that tab selected). To use Force Fill, switch to a tab that shows the real application form (Greenhouse / Lever / etc.) after you click Apply on the job.',
+                    'Force Fill was skipped on this page (e.g. job search table or internal dashboard). Click the tab that shows the real application form, then Force Fill again.',
                     'error'
                 );
             } else {
@@ -700,20 +700,32 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    /**
+     * Prefer the tab the user is actually viewing (active tab in this window).
+     * Using only "last ATS heartbeat" sent Force Fill to the wrong tab (e.g. job listings
+     * instead of the apply form), which produced skipped / confusing errors.
+     */
     function resolveTargetTab(callback) {
-        chrome.runtime.sendMessage({ action: "get_last_ats_tab" }, (bgRes) => {
-            const lastAtsTabId = bgRes?.lastAtsContext?.tabId;
-            if (lastAtsTabId) {
-                chrome.tabs.get(lastAtsTabId, (tab) => {
-                    if (!chrome.runtime.lastError && tab && /^https?:\/\//i.test(tab.url || '')) {
-                        callback(tab);
-                        return;
-                    }
-                    fallbackResolveTargetTab(callback);
-                });
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            const active = tabs && tabs[0];
+            if (active && /^https?:\/\//i.test(active.url || "")) {
+                callback(active);
                 return;
             }
-            fallbackResolveTargetTab(callback);
+            chrome.runtime.sendMessage({ action: "get_last_ats_tab" }, (bgRes) => {
+                const lastAtsTabId = bgRes?.lastAtsContext?.tabId;
+                if (lastAtsTabId) {
+                    chrome.tabs.get(lastAtsTabId, (tab) => {
+                        if (!chrome.runtime.lastError && tab && /^https?:\/\//i.test(tab.url || "")) {
+                            callback(tab);
+                            return;
+                        }
+                        fallbackResolveTargetTab(callback);
+                    });
+                    return;
+                }
+                fallbackResolveTargetTab(callback);
+            });
         });
     }
 
