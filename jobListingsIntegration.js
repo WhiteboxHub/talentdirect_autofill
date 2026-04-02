@@ -211,8 +211,182 @@
         return urls;
     }
 
-    function startQueueFromListingPage() {
-        const urls = extractUrlsFromTable();
+    /** AG Grid keeps only visible rows in the DOM; scroll the body viewport to collect every row. */
+    function findAgBodyScrollViewport() {
+        const selectors = [
+            ".ag-body-viewport",
+            ".ag-center-cols-viewport",
+            ".ag-body-vertical-scroll-viewport"
+        ];
+        for (const sel of selectors) {
+            const nodes = document.querySelectorAll(sel);
+            for (const el of nodes) {
+                if (el.scrollHeight > el.clientHeight + 8) return el;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Merge URLs from repeated extractUrlsFromTable() calls while scrolling (virtualized grids).
+     */
+    async function collectUrlsForQueue() {
+        const merged = [];
+        const seen = new Set();
+        function mergeBatch() {
+            for (const u of extractUrlsFromTable()) {
+                if (!seen.has(u)) {
+                    seen.add(u);
+                    merged.push(u);
+                }
+            }
+        }
+
+        mergeBatch();
+        const viewport = findAgBodyScrollViewport();
+        if (!viewport) {
+            return merged;
+        }
+
+        const startTop = viewport.scrollTop;
+        let lastTop = -1;
+        let stuck = 0;
+        let lastHeight = viewport.scrollHeight;
+
+        for (let step = 0; step < 150; step++) {
+            const maxScroll = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+            const delta = Math.max(100, Math.floor(viewport.clientHeight * 0.72));
+            viewport.scrollTop = Math.min(viewport.scrollTop + delta, maxScroll);
+            await new Promise((r) => setTimeout(r, 90));
+            mergeBatch();
+
+            if (viewport.scrollHeight > lastHeight + 20) {
+                lastHeight = viewport.scrollHeight;
+                stuck = 0;
+            }
+
+            if (Math.abs(viewport.scrollTop - lastTop) < 0.5) {
+                stuck++;
+                if (stuck >= 5) break;
+            } else {
+                stuck = 0;
+            }
+            lastTop = viewport.scrollTop;
+
+            if (maxScroll <= 1 || viewport.scrollTop >= maxScroll - 1) {
+                mergeBatch();
+                break;
+            }
+        }
+
+        viewport.scrollTop = startTop;
+        return merged;
+    }
+
+    function sleep(ms) {
+        return new Promise((r) => setTimeout(r, ms));
+    }
+
+    function getPaginationText() {
+        const selectors = [
+            ".ag-paging-page-summary-panel",
+            ".ag-paging-row-summary-panel",
+            "[class*='pagination']",
+            "[class*='Pagination']"
+        ];
+        for (const sel of selectors) {
+            const el = document.querySelector(sel);
+            if (el && (el.textContent || "").trim()) {
+                return (el.textContent || "").replace(/\s+/g, " ").trim();
+            }
+        }
+        return "";
+    }
+
+    function getPageToken() {
+        const summary = getPaginationText();
+        const firstRow = document.querySelector(
+            ".ag-center-cols-container [role='row'], table tbody tr, [role='grid'] [role='row']:not([role='columnheader'])"
+        );
+        const firstRowText = (firstRow?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 120);
+        return `${summary}||${firstRowText}`;
+    }
+
+    function findNextPageButton() {
+        const selectors = [
+            ".ag-paging-button[ref='btNext']",
+            ".ag-paging-button[aria-label*='next' i]",
+            "button[aria-label*='next' i]",
+            "button[title*='next' i]",
+            "[role='button'][aria-label*='next' i]",
+            "[data-testid*='next' i]"
+        ];
+        for (const sel of selectors) {
+            const el = document.querySelector(sel);
+            if (el) return el;
+        }
+        const candidates = Array.from(document.querySelectorAll("button, [role='button'], a"));
+        return (
+            candidates.find((el) => /^(>|›|»|next)$/i.test((el.textContent || "").trim())) || null
+        );
+    }
+
+    function isDisabled(el) {
+        if (!el) return true;
+        const cls = (el.className || "").toString().toLowerCase();
+        return (
+            el.disabled ||
+            el.getAttribute("aria-disabled") === "true" ||
+            cls.includes("disabled") ||
+            cls.includes("inactive") ||
+            cls.includes("ag-disabled")
+        );
+    }
+
+    async function waitForPageAdvance(beforeToken) {
+        for (let i = 0; i < 20; i++) {
+            await sleep(180);
+            const now = getPageToken();
+            if (now && now !== beforeToken) return true;
+        }
+        return false;
+    }
+
+    async function collectUrlsAcrossPagination() {
+        const merged = [];
+        const seen = new Set();
+        const merge = (batch) => {
+            for (const u of batch) {
+                if (!seen.has(u)) {
+                    seen.add(u);
+                    merged.push(u);
+                }
+            }
+        };
+
+        merge(await collectUrlsForQueue());
+
+        const MAX_PAGES = 25;
+        for (let page = 1; page < MAX_PAGES; page++) {
+            const nextBtn = findNextPageButton();
+            if (!nextBtn || isDisabled(nextBtn)) break;
+
+            const beforeToken = getPageToken();
+            nextBtn.click();
+            const moved = await waitForPageAdvance(beforeToken);
+            if (!moved) break;
+            merge(await collectUrlsForQueue());
+        }
+
+        return merged;
+    }
+
+    async function startQueueFromListingPage() {
+        const viewport = findAgBodyScrollViewport();
+        if (viewport) {
+            showListingToast("Collecting apply links from the full table (scrolling)…", false);
+        }
+        const urls = await collectUrlsAcrossPagination();
         if (!urls.length) {
             showListingToast(
                 "No job URLs found. Add a Job URL column or data-job-url on rows with http(s) links, then try again.",
@@ -304,23 +478,29 @@
 
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (request.action === "collect_and_start_queue") {
-            const urls = extractUrlsFromTable();
-            if (!urls.length) {
-                sendResponse({
-                    ok: false,
-                    error:
-                        "No job URLs found. Ensure the Job URL column has links, or set data-job-url on each row. Scroll so rows are visible."
-                });
-                return false;
-            }
-            chrome.runtime.sendMessage({ action: "start_apply_queue", urls }, (response) => {
-                const err = chrome.runtime.lastError;
-                if (err) {
-                    sendResponse({ ok: false, error: err.message });
-                    return;
+            void (async () => {
+                try {
+                    const urls = await collectUrlsAcrossPagination();
+                    if (!urls.length) {
+                        sendResponse({
+                            ok: false,
+                            error:
+                                "No job URLs found. Ensure the Job URL / Apply column has links. If the table is large, wait — the extension scrolls the grid to collect all rows."
+                        });
+                        return;
+                    }
+                    chrome.runtime.sendMessage({ action: "start_apply_queue", urls }, (response) => {
+                        const err = chrome.runtime.lastError;
+                        if (err) {
+                            sendResponse({ ok: false, error: err.message });
+                            return;
+                        }
+                        sendResponse(response || { ok: false, error: "Unknown error" });
+                    });
+                } catch (e) {
+                    sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
                 }
-                sendResponse(response || { ok: false, error: "Unknown error" });
-            });
+            })();
             return true;
         }
     });

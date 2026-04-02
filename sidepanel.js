@@ -508,7 +508,8 @@ document.addEventListener('DOMContentLoaded', () => {
             if (queueProgressPanel) queueProgressPanel.classList.remove('hidden');
             const idx = (res.index || 0) + 1;
             const total = res.total || 0;
-            const pct = total > 0 ? Math.round((res.index / total) * 100) : 0;
+            // Match the "N / total" label: bar shows position in queue, not jobs completed
+            const pct = total > 0 ? Math.round((idx / total) * 100) : 0;
             let host = '';
             try { host = new URL(res.currentUrl).hostname; } catch (_) { host = res.currentUrl || ''; }
             if (queueProgressText) queueProgressText.textContent = `Job ${idx} of ${total} — ${host}`;
