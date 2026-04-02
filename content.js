@@ -22,6 +22,20 @@ let fillCooldownUntil = 0;
 const FILL_COOLDOWN_MS = 5000;
 
 /**
+ * After any successful fill for `pageKey()`, block *automatic* re-fills (load/mutation/SPA)
+ * so user edits are not overwritten. Force Fill and queue use manual=true and bypass this.
+ */
+let fillCompletedPageKey = null;
+
+function pageKey() {
+    return location.origin + location.pathname + location.search;
+}
+
+function shouldSkipAutomaticFill() {
+    return fillCompletedPageKey !== null && fillCompletedPageKey === pageKey();
+}
+
+/**
  * Queue and auto-fill read `normalizedData` from storage. If it is missing (stale profile sync)
  * but raw `resumeData` exists, normalize in-page — same shape as the side panel uses.
  */
@@ -113,6 +127,10 @@ function applyEdits(edits) {
 function attemptAutoFill() {
     if (window !== window.top) return;
     if (autoFillState.debouncing) return;
+    if (shouldSkipAutomaticFill()) {
+        _log("Automatic fill skipped — already completed for this page");
+        return;
+    }
 
     autoFillState.debouncing = true;
     setTimeout(() => {
@@ -195,7 +213,7 @@ const observer = new MutationObserver((mutations) => {
             });
         }
     }
-    if (shouldTrigger) {
+    if (shouldTrigger && !shouldSkipAutomaticFill()) {
         attemptAutoFill();
     }
 });
@@ -210,6 +228,11 @@ if (document.body) {
 }
 
 function fillForm(normalizedData, aiEnabled, isManualTrigger = false) {
+    if (!isManualTrigger && shouldSkipAutomaticFill()) {
+        _log("fillForm: automatic run skipped — already filled this URL");
+        return false;
+    }
+
     // Block internal job-board chrome on auto-fill. Queue / Force Fill use manual=true:
     // still block heavy AG Grid listing dashboards (column filters), but do not block
     // other pages that only loosely match "listings" heuristics.
@@ -238,6 +261,7 @@ function fillForm(normalizedData, aiEnabled, isManualTrigger = false) {
     const strategy = ATSStrategyRegistry.getStrategy(window.location.href, document);
     strategy.execute(normalizedData, aiEnabled);
     fillCooldownUntil = Date.now() + FILL_COOLDOWN_MS;
+    fillCompletedPageKey = pageKey();
     return true;
 }
 
@@ -345,8 +369,7 @@ function beginQueueJob(request) {
     };
 
     tryQueueFill();
-    setTimeout(tryQueueFill, 2200);
-    setTimeout(tryQueueFill, 5200);
+    setTimeout(tryQueueFill, 2800);
 }
 
 function clickApplyButtonIfPresent() {
