@@ -1,4 +1,6 @@
 // content.js
+/* global chrome, ResumeProcessor, GenericStrategy, ATSStrategyRegistry */
+/* eslint-env browser */
 (function () {
 if (window.__AUTOFILL_RESUME_CONTENT_INIT__) return;
 window.__AUTOFILL_RESUME_CONTENT_INIT__ = true;
