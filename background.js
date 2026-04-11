@@ -55,15 +55,12 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       return;
     }
 
-    // Thank-you URL but we already cleared waiting (e.g. moveNext in progress) — do not
-    // call postQueueBegin here or we re-arm submit state and can double-advance / open extra windows.
     if (u && isQueueSuccessUrl(u)) {
       return;
     }
 
     if (changeInfo.status !== "complete") return;
 
-    // Re-read the tab after "complete" — tab.url in this event is sometimes still the old URL.
     chrome.tabs.get(tabId, (fresh) => {
       if (chrome.runtime.lastError) return;
       hydrateQueueFromStorage(() => {
@@ -88,7 +85,6 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   });
 });
 
-/** URL path/query typical of a post-submit thank-you or confirmation screen */
 function isQueueSuccessUrl(u) {
   return (
     /\/confirmation(?:\/|\?|#|$)/i.test(u) ||
@@ -96,7 +92,6 @@ function isQueueSuccessUrl(u) {
     /\/success(?:\/|\?|#|$)/i.test(u) ||
     /\/application[-_]?(?:submitted|complete)/i.test(u) ||
     /[?&](?:submitted|success)=/i.test(u) ||
-    // Workday (myworkdayjobs.com / workday.com) often uses these instead of /thank-you
     /\/applyconfirmation/i.test(u) ||
     /\/apply-confirmation/i.test(u) ||
     /\/candidateconfirmation/i.test(u) ||
@@ -104,7 +99,6 @@ function isQueueSuccessUrl(u) {
   );
 }
 
-/** Maintenance / outage / unusable pages — skip job without waiting for submit_timeout */
 function isQueueBlockedOrUnusableUrl(u) {
   if (!u) return false;
   if (/community\.workday\.com/i.test(u) && /maintenance/i.test(u)) return true;
@@ -117,10 +111,28 @@ function isQueueBlockedOrUnusableUrl(u) {
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  // OpenAI "Fill Everything" primary path
+  if (request.action === "ACTION_FILL_ALL") {
+    handleActionFillAll(request)
+      .then((result) => sendResponse(result))
+      .catch((err) => {
+        _warn("ACTION_FILL_ALL failed:", err);
+        sendResponse({
+          ok: false,
+          useFallbackStrategy: true,
+          error: String(err?.message || err)
+        });
+      });
+    return true;
+  }
+
   if (request.action === "generate_ai_answer") {
-    callOllama(request.prompt).then(result => {
-      sendResponse({ text: result });
-    });
+    callOpenAIAnswerFromPrompt(request.prompt)
+      .then(result => sendResponse({ text: result }))
+      .catch(async () => {
+        const fallback = await callOllama(request.prompt || "");
+        sendResponse({ text: fallback });
+      });
     return true;
   }
 
@@ -147,7 +159,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
-  /** Lets a tab that just navigated (e.g. form → thank-you) re-attach success detection. */
   if (request.action === "get_queue_context_for_tab") {
     hydrateQueueFromStorage(() => {
       const tabId = sender?.tab?.id;
@@ -232,6 +243,192 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
+async function handleActionFillAll(request) {
+  const resumeData = request?.resumeData;
+  const formSchema = request?.formSchema;
+  const context = request?.context || {};
+
+  if (!resumeData || !Array.isArray(formSchema)) {
+    return {
+      ok: false,
+      useFallbackStrategy: true,
+      error: "Missing resumeData or formSchema."
+    };
+  }
+
+  const cfg = await new Promise((resolve) => {
+    chrome.storage.local.get(["openai_api_key"], resolve);
+  });
+  const apiKey = cfg?.openai_api_key;
+  if (!apiKey) {
+    return {
+      ok: false,
+      useFallbackStrategy: true,
+      error: "OpenAI API key missing. Save it in side panel."
+    };
+  }
+
+  try {
+    const prompt = buildFillEverythingPrompt({ resumeData, formSchema, context });
+    const content = await callOpenAIJsonPlan(prompt, apiKey);
+    const parsed = safeJsonParse(content);
+    if (!parsed || typeof parsed !== "object") {
+      return {
+        ok: false,
+        useFallbackStrategy: true,
+        error: "OpenAI returned invalid plan JSON."
+      };
+    }
+    return { ok: true, plan: parsed };
+  } catch (err) {
+    return {
+      ok: false,
+      useFallbackStrategy: true,
+      error: `OpenAI call failed: ${String(err?.message || err)}`
+    };
+  }
+}
+
+function buildFillEverythingPrompt({ resumeData, formSchema, context }) {
+  const summary = getResumeSummary(resumeData);
+  const highlights = getResumeHighlights(resumeData);
+  return `
+You are an AI agent that creates a JSON "fill plan" for job application forms.
+
+Goal:
+Map candidate resume data to each form field.
+
+Hard requirements:
+1) Output ONLY a valid JSON object.
+2) Use fieldId values exactly from formSchema.
+3) For text/textarea fields: actionType="text", provide valueText.
+4) For dropdown/select fields: actionType="select", and valueText MUST exactly match one provided option.
+5) For radio fields: actionType="radio", provide choiceIndex (0-based based on options array order).
+6) For checkbox fields: actionType="checkbox", provide checked true/false.
+7) If uncertain, skip the field (do not hallucinate facts).
+
+Open-ended questions:
+- Use candidate SUMMARY and HIGHLIGHTS to draft tailored answers.
+- Keep answers concise, professional, and truthful to the resume.
+
+Response JSON format:
+{
+  "fills": [
+    {
+      "fieldId": "top::id=email",
+      "actionType": "text|select|radio|checkbox",
+      "valueText": "example",
+      "choiceIndex": 0,
+      "checked": true
+    }
+  ]
+}
+
+Context:
+${JSON.stringify(context || {}, null, 2)}
+
+Candidate SUMMARY:
+${summary || ""}
+
+Candidate HIGHLIGHTS:
+${JSON.stringify(highlights, null, 2)}
+
+Resume Data:
+${JSON.stringify(resumeData, null, 2)}
+
+Form Schema:
+${JSON.stringify(formSchema, null, 2)}
+`.trim();
+}
+
+function getResumeSummary(resumeData) {
+  return (
+    resumeData?.basics?.summary ||
+    resumeData?.summary ||
+    resumeData?.professionalSummary ||
+    ""
+  );
+}
+
+function getResumeHighlights(resumeData) {
+  const result = [];
+  if (Array.isArray(resumeData?.highlights)) result.push(...resumeData.highlights);
+  if (Array.isArray(resumeData?.work)) {
+    for (const work of resumeData.work) {
+      if (Array.isArray(work?.highlights)) result.push(...work.highlights);
+    }
+  }
+  return result.map((x) => String(x || "").trim()).filter(Boolean).slice(0, 40);
+}
+
+async function callOpenAIJsonPlan(prompt, apiKey) {
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: "gpt-4o",
+      response_format: { type: "json_object" },
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: "You generate strict JSON form-fill plans." },
+        { role: "user", content: prompt }
+      ]
+    })
+  });
+
+  if (!res.ok) {
+    const bodyText = await res.text().catch(() => "");
+    throw new Error(`HTTP ${res.status} ${bodyText}`);
+  }
+
+  const data = await res.json();
+  const content = data?.choices?.[0]?.message?.content;
+  if (!content) throw new Error("OpenAI response missing content");
+  return content;
+}
+
+async function callOpenAIAnswerFromPrompt(prompt) {
+  const cfg = await new Promise((resolve) => {
+    chrome.storage.local.get(["openai_api_key"], resolve);
+  });
+  const apiKey = cfg?.openai_api_key;
+  if (!apiKey) throw new Error("OpenAI API key missing.");
+
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: "gpt-4o",
+      temperature: 0.4,
+      messages: [
+        { role: "system", content: "Provide concise professional job-application answers." },
+        { role: "user", content: String(prompt || "") }
+      ]
+    })
+  });
+
+  if (!res.ok) {
+    const bodyText = await res.text().catch(() => "");
+    throw new Error(`HTTP ${res.status} ${bodyText}`);
+  }
+  const data = await res.json();
+  return data?.choices?.[0]?.message?.content || "[No response from OpenAI]";
+}
+
+function safeJsonParse(text) {
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    return null;
+  }
+}
+
 async function startApplyQueue(urls) {
   await new Promise((resolve) => hydrateQueueFromStorage(resolve));
   const cleaned = Array.from(new Set((urls || []).filter(Boolean)));
@@ -244,7 +441,6 @@ async function startApplyQueue(urls) {
   queueRuntime.index = 0;
   queueRuntime.waitingForSubmit = false;
 
-  // Open first job in a new browser window (listings tab stays as-is)
   const win = await chrome.windows.create({
     url: cleaned[0],
     focused: true,
@@ -264,10 +460,6 @@ function scheduleQueueSubmitTimer() {
   }, queueRuntime.timeoutMs);
 }
 
-/**
- * Tab may report "complete" before the content script is registered, or the job URL
- * may need programmatic injection. Retry sendMessage, then inject scripts once.
- */
 function postQueueBeginToContent(tabId) {
   if (!queueRuntime.running) return;
   const currentUrl = queueRuntime.urls[queueRuntime.index];
@@ -335,11 +527,6 @@ function handleQueueSkipJob(request, senderTabId) {
   void advanceQueue("blocked_dom", { requireWaiting: true });
 }
 
-/**
- * @param {string} reason
- * @param {{ requireWaiting?: boolean }} [options] — if requireWaiting is false, advance even when
- *   waitingForSubmit is still false (e.g. first paint landed on a maintenance URL before queue_begin).
- */
 async function advanceQueue(reason, options = {}) {
   const allowWithoutWaiting = options.requireWaiting === false;
   if (!queueRuntime.running) return;
@@ -347,8 +534,6 @@ async function advanceQueue(reason, options = {}) {
 
   clearQueueTimer();
   queueRuntime.waitingForSubmit = false;
-
-  const completedUrl = queueRuntime.urls[queueRuntime.index];
   _log(`Queue advance: ${reason}`);
   queueRuntime.index += 1;
   persistQueueState();
@@ -438,10 +623,6 @@ function persistQueueState() {
   });
 }
 
-/**
- * Service workers sleep — in-memory queueRuntime is lost. Restore from chrome.storage.local
- * so we still detect /confirmation and advance after submit.
- */
 function hydrateQueueFromStorage(done) {
   if (queueRuntime.running && queueRuntime.urls && queueRuntime.urls.length > 0) {
     done();
@@ -472,7 +653,6 @@ function hydrateQueueFromStorage(done) {
   });
 }
 
-/** Injects job table helper + collect_and_start_queue listener (not part of ensureContentScript stack). */
 async function ensureJobListingsIntegration(tabId) {
   await chrome.scripting.executeScript({
     target: { tabId },

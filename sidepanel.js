@@ -9,17 +9,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const profileSelect = document.getElementById('profileSelect');
     const deleteProfileBtn = document.getElementById('deleteProfileBtn');
 
-    // Summary Panel Elements
+    const openaiApiKeyInput = document.getElementById('openaiApiKeyInput');
+    const saveOpenAiKeyBtn = document.getElementById('saveOpenAiKeyBtn');
+
     const summaryPanelContainer = document.getElementById('summaryPanelContainer');
     const summaryTableBody = document.getElementById('summaryTableBody');
     const applyEditsBtn = document.getElementById('applyEditsBtn');
 
-    // Custom Answers Elements
     const atsSelector = document.getElementById('atsSelector');
     const customAnswersInput = document.getElementById('customAnswersInput');
     const saveCustomAnswersBtn = document.getElementById('saveCustomAnswersBtn');
 
-    // Queue Progress Elements
     const queueProgressPanel = document.getElementById('queueProgressPanel');
     const queueProgressText = document.getElementById('queueProgressText');
     const queueProgressCount = document.getElementById('queueProgressCount');
@@ -27,13 +27,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const skipJobBtn = document.getElementById('skipJobBtn');
     const cancelQueueBtn = document.getElementById('cancelQueueBtn');
 
-    // Preferences Elements
     const preferencesToggle = document.getElementById('preferencesToggle');
     const preferencesBody = document.getElementById('preferencesBody');
     const preferencesArrow = document.getElementById('preferencesArrow');
     const savePreferencesBtn = document.getElementById('savePreferencesBtn');
 
-    // Keep track of the current tab ID logic executes on 
     let activeTabId = null;
     let customAtsAnswers = {
         Generic: {},
@@ -66,68 +64,80 @@ document.addEventListener('DOMContentLoaded', () => {
     let savedProfiles = {};
     let activeProfileName = null;
 
-    // First load to initialize the extension. 
-    // Data is strictly managed through the single source of truth in local storage.
-    chrome.storage.local.get(['resumeData', 'aiEnabled', 'customAtsAnswers', 'savedProfiles', 'activeProfileName', 'normalizedData', 'resumeFile'], (result) => {
+    chrome.storage.local.get(
+        ['resumeData', 'aiEnabled', 'customAtsAnswers', 'savedProfiles', 'activeProfileName', 'normalizedData', 'resumeFile', 'openai_api_key'],
+        (result) => {
+            if (result.aiEnabled) document.getElementById('aiToggle').checked = true;
+            if (result.customAtsAnswers) customAtsAnswers = { ...customAtsAnswers, ...result.customAtsAnswers };
+            updateCustomAnswersTextarea();
 
-        // --- 1. Settings Bootstrapping ---
-        if (result.aiEnabled) {
-            document.getElementById('aiToggle').checked = true;
+            if (openaiApiKeyInput && result.openai_api_key) {
+                openaiApiKeyInput.value = maskApiKey(result.openai_api_key);
+                openaiApiKeyInput.dataset.isMasked = 'true';
+            }
+
+            if (result.savedProfiles) savedProfiles = result.savedProfiles;
+
+            if (!result.savedProfiles && result.resumeData) {
+                const legacyName = "resume (legacy)";
+                savedProfiles[legacyName] = {
+                    resumeData: result.resumeData,
+                    normalizedData: result.normalizedData,
+                    resumeFile: result.resumeFile
+                };
+                activeProfileName = legacyName;
+                chrome.storage.local.set({ savedProfiles, activeProfileName });
+            } else if (result.activeProfileName) {
+                activeProfileName = result.activeProfileName;
+            }
+
+            renderProfileDropdown();
         }
-        if (result.customAtsAnswers) {
-            customAtsAnswers = { ...customAtsAnswers, ...result.customAtsAnswers };
-        }
-        updateCustomAnswersTextarea();
+    );
 
-        // --- 2. Profile Bootstrapping ---
-        if (result.savedProfiles) {
-            savedProfiles = result.savedProfiles;
-        }
+    function maskApiKey(key) {
+        const v = String(key || '');
+        if (v.length <= 12) return '************';
+        return `${v.slice(0, 7)}...${v.slice(-4)}`;
+    }
 
-        // Migrate a legacy install (single profile) to the new multi-profile structure.
-        if (!result.savedProfiles && result.resumeData) {
-            const legacyName = "resume (legacy)";
-            savedProfiles[legacyName] = {
-                resumeData: result.resumeData,
-                normalizedData: result.normalizedData,
-                resumeFile: result.resumeFile
-            };
-            activeProfileName = legacyName;
+    if (openaiApiKeyInput) {
+        openaiApiKeyInput.addEventListener('focus', () => {
+            if (openaiApiKeyInput.dataset.isMasked === 'true') {
+                openaiApiKeyInput.value = '';
+                openaiApiKeyInput.dataset.isMasked = 'false';
+            }
+        });
+    }
 
-            // Re-save immediately
-            chrome.storage.local.set({
-                savedProfiles: savedProfiles,
-                activeProfileName: activeProfileName
+    if (saveOpenAiKeyBtn) {
+        saveOpenAiKeyBtn.addEventListener('click', () => {
+            if (!openaiApiKeyInput) return;
+            const raw = (openaiApiKeyInput.value || '').trim();
+            if (!raw) {
+                showStatus('Please enter an OpenAI API key.', 'error');
+                return;
+            }
+            if (!raw.startsWith('sk-')) {
+                showStatus('Invalid key format. Key should start with "sk-".', 'error');
+                return;
+            }
+            chrome.storage.local.set({ openai_api_key: raw }, () => {
+                openaiApiKeyInput.value = maskApiKey(raw);
+                openaiApiKeyInput.dataset.isMasked = 'true';
+                showStatus('OpenAI API key saved.', 'success');
             });
-        }
-        else if (result.activeProfileName) {
-            activeProfileName = result.activeProfileName;
-        }
+        });
+    }
 
-        renderProfileDropdown();
-    });
+    atsSelector.addEventListener('change', () => updateCustomAnswersTextarea());
 
-    // Handle ATS Selector Change
-    atsSelector.addEventListener('change', () => {
-        updateCustomAnswersTextarea();
-    });
-
-    // Handle Custom Answers Save
     saveCustomAnswersBtn.addEventListener('click', () => {
         const selectedAts = atsSelector.value;
         const inputText = customAnswersInput.value.trim();
-
         try {
-            if (inputText) {
-                const parsedJson = JSON.parse(inputText);
-                customAtsAnswers[selectedAts] = parsedJson;
-            } else {
-                customAtsAnswers[selectedAts] = {};
-            }
-
-            chrome.storage.local.set({ customAtsAnswers: customAtsAnswers }, () => {
-                showStatus('Custom Answers Saved!', 'success');
-            });
+            customAtsAnswers[selectedAts] = inputText ? JSON.parse(inputText) : {};
+            chrome.storage.local.set({ customAtsAnswers }, () => showStatus('Custom Answers Saved!', 'success'));
         } catch (error) {
             showStatus('Invalid JSON format.', 'error');
         }
@@ -136,19 +146,13 @@ document.addEventListener('DOMContentLoaded', () => {
     function updateCustomAnswersTextarea() {
         const selectedAts = atsSelector.value;
         const data = customAtsAnswers[selectedAts] || {};
-        if (Object.keys(data).length === 0) {
-            customAnswersInput.value = '';
-        } else {
-            customAnswersInput.value = JSON.stringify(data, null, 2);
-        }
+        customAnswersInput.value = Object.keys(data).length === 0 ? '' : JSON.stringify(data, null, 2);
     }
 
-    // Handle AI Toggle
     document.getElementById('aiToggle').addEventListener('change', (e) => {
         chrome.storage.local.set({ aiEnabled: e.target.checked });
     });
 
-    // --- Preferences Section ---
     if (preferencesToggle) {
         preferencesToggle.addEventListener('click', () => {
             preferencesBody.classList.toggle('hidden');
@@ -196,37 +200,30 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             const prefs = collectPreferencesFromUI();
             const profile = savedProfiles[activeProfileName];
-            if (profile.resumeData) {
-                profile.resumeData.applicationPreferences = prefs;
-            }
+            if (profile.resumeData) profile.resumeData.applicationPreferences = prefs;
             profile.normalizedData = ResumeProcessor.normalize(profile.resumeData);
-            chrome.storage.local.set({ savedProfiles: savedProfiles }, () => {
+            chrome.storage.local.set({ savedProfiles }, () => {
                 syncActiveProfileToRoot();
                 showStatus('Preferences saved!', 'success');
             });
         });
     }
 
-    // Render Profile Dropdown and Swap Storage State
     function renderProfileDropdown() {
         const profileNames = Object.keys(savedProfiles);
-
-        profileSelect.innerHTML = ''; // Clear dropdown
+        profileSelect.innerHTML = '';
 
         if (profileNames.length === 0) {
             const option = document.createElement('option');
             option.value = "";
             option.textContent = "No Profiles Found - Please Upload";
             profileSelect.appendChild(option);
-
             deleteProfileBtn.disabled = true;
             fillFormBtn.disabled = true;
             if (applyQueueBtn) applyQueueBtn.disabled = true;
             viewResumeBtn.disabled = true;
-
             const resumeFileName = document.getElementById('resumeFileName');
             if (resumeFileName) resumeFileName.textContent = "Upload PDF/DOCX";
-
             return;
         }
 
@@ -234,27 +231,19 @@ document.addEventListener('DOMContentLoaded', () => {
             const option = document.createElement('option');
             option.value = name;
             option.textContent = name;
-            if (name === activeProfileName) {
-                option.selected = true;
-            }
+            if (name === activeProfileName) option.selected = true;
             profileSelect.appendChild(option);
         });
 
         deleteProfileBtn.disabled = false;
-
-        // Force the root storage sync to match the actively selected profile
         syncActiveProfileToRoot();
     }
 
-    // Handles the heavy-lifting of keeping the root keys exactly matching the chosen profile's data. 
-    // This allows content.js completely agnostic access without knowing about profiles.
     function syncActiveProfileToRoot() {
         if (!activeProfileName || !savedProfiles[activeProfileName]) return;
-
         const profileData = savedProfiles[activeProfileName];
-
         chrome.storage.local.set({
-            activeProfileName: activeProfileName,
+            activeProfileName,
             resumeData: profileData.resumeData,
             normalizedData: profileData.normalizedData,
             resumeFile: profileData.resumeFile
@@ -263,7 +252,6 @@ document.addEventListener('DOMContentLoaded', () => {
             showStatus(`Profile "${activeProfileName}" Active`, 'success');
             updatePreview(profileData.resumeData);
             loadPreferencesUI(profileData.resumeData?.applicationPreferences);
-
             const resumeFileName = document.getElementById('resumeFileName');
             if (resumeFileName) {
                 resumeFileName.textContent = profileData.resumeFile
@@ -278,154 +266,116 @@ document.addEventListener('DOMContentLoaded', () => {
         return String(name).replace(/[^\x20-\x7E]/g, "").trim() || "resume";
     }
 
-    // Handle Dropdown Change
     profileSelect.addEventListener('change', (e) => {
         activeProfileName = e.target.value;
         syncActiveProfileToRoot();
     });
 
-    // Handle Profile Deletion
     deleteProfileBtn.addEventListener('click', () => {
         if (activeProfileName && savedProfiles[activeProfileName]) {
             delete savedProfiles[activeProfileName];
-
-            // Pick a new active profile gracefully
             const remainingProfiles = Object.keys(savedProfiles);
             if (remainingProfiles.length > 0) {
                 activeProfileName = remainingProfiles[0];
             } else {
                 activeProfileName = null;
-                // If completely empty, thoroughly flush root keys
                 chrome.storage.local.remove(['resumeData', 'normalizedData', 'resumeFile']);
                 updatePreview({});
             }
-
-            chrome.storage.local.set({ savedProfiles: savedProfiles }, () => {
-                renderProfileDropdown();
-            });
+            chrome.storage.local.set({ savedProfiles }, () => renderProfileDropdown());
         }
     });
 
-    // Handle File Upload (JSON Resume Creation/Overwrite)
     resumeInput.addEventListener('change', (event) => {
         const file = event.target.files[0];
-        if (file) {
-            // "frontend.json" -> "frontend"
-            const newProfileName = file.name.replace(/\.[^/.]+$/, "");
+        if (!file) return;
+        const newProfileName = file.name.replace(/\.[^/.]+$/, "");
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const json = JSON.parse(e.target.result);
+                const warnings = validateResumeSchema(json);
+                if (warnings.length > 0) showStatus('Warning: ' + warnings.join('; '), 'error');
 
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                try {
-                    const json = JSON.parse(e.target.result);
-
-                    const warnings = validateResumeSchema(json);
-                    if (warnings.length > 0) {
-                        showStatus('Warning: ' + warnings.join('; '), 'error');
-                    }
-
-                    const normalizedData = ResumeProcessor.normalize(json);
-
-                    let retainedFile = null;
-                    if (savedProfiles[newProfileName] && savedProfiles[newProfileName].resumeFile) {
-                        retainedFile = savedProfiles[newProfileName].resumeFile;
-                    }
-
-                    // Save to the index
-                    savedProfiles[newProfileName] = {
-                        resumeData: json,
-                        normalizedData: normalizedData,
-                        resumeFile: retainedFile
-                    };
-
-                    activeProfileName = newProfileName;
-
-                    chrome.storage.local.set({ savedProfiles: savedProfiles }, () => {
-                        renderProfileDropdown(); // Re-renders dropdown and forcibly syncs data to root
-                    });
-
-                } catch (error) {
-                    showStatus('Error parsing JSON file.', 'error');
+                const normalizedData = ResumeProcessor.normalize(json);
+                let retainedFile = null;
+                if (savedProfiles[newProfileName] && savedProfiles[newProfileName].resumeFile) {
+                    retainedFile = savedProfiles[newProfileName].resumeFile;
                 }
-            };
-            reader.readAsText(file);
-        }
+                savedProfiles[newProfileName] = { resumeData: json, normalizedData, resumeFile: retainedFile };
+                activeProfileName = newProfileName;
+                chrome.storage.local.set({ savedProfiles }, () => renderProfileDropdown());
+            } catch (error) {
+                showStatus('Error parsing JSON file.', 'error');
+            }
+        };
+        reader.readAsText(file);
     });
 
-    // Handle Resume File Upload (PDF/DOCX)
     const resumeFileInput = document.getElementById('resumeFileInput');
-
     if (resumeFileInput) {
         resumeFileInput.addEventListener('change', (event) => {
             const file = event.target.files[0];
-            if (file) {
-                if (!activeProfileName || !savedProfiles[activeProfileName]) {
-                    showStatus('Upload a JSON resume first to create a profile!', 'error');
-                    return;
-                }
-
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                    const resumeFileData = {
-                        data: e.target.result, // base64 data
-                        name: file.name,
-                        type: file.type,
-                        size: file.size
-                    };
-
-                    // Append the file specifically to the Active Profile instead of loosely globally.
-                    savedProfiles[activeProfileName].resumeFile = resumeFileData;
-
-                    chrome.storage.local.set({ savedProfiles: savedProfiles }, () => {
-                        syncActiveProfileToRoot();
-                    });
-                };
-                reader.readAsDataURL(file);
+            if (!file) return;
+            if (!activeProfileName || !savedProfiles[activeProfileName]) {
+                showStatus('Upload a JSON resume first to create a profile!', 'error');
+                return;
             }
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const resumeFileData = {
+                    data: e.target.result,
+                    name: file.name,
+                    type: file.type,
+                    size: file.size
+                };
+                savedProfiles[activeProfileName].resumeFile = resumeFileData;
+                chrome.storage.local.set({ savedProfiles }, () => syncActiveProfileToRoot());
+            };
+            reader.readAsDataURL(file);
         });
     }
 
-    // Handle manual form fill (Fallback)
     fillFormBtn.addEventListener('click', () => {
         chrome.storage.local.get(['resumeData', 'aiEnabled'], (result) => {
-            if (result.resumeData) {
-                resolveTargetTab((activeTab) => {
-                    if (!activeTab) {
-                        showStatus('No active tab found.', 'error');
-                        return;
-                    }
+            if (!result.resumeData) {
+                showStatus('No resume data found.', 'error');
+                return;
+            }
+            resolveTargetTab((activeTab) => {
+                if (!activeTab) {
+                    showStatus('No active tab found.', 'error');
+                    return;
+                }
 
-                    const activeUrl = activeTab.url || '';
-                    const normalizedData = ResumeProcessor.normalize(result.resumeData);
-                    activeTabId = activeTab.id; // Save tab ID for reporting
+                const activeUrl = activeTab.url || '';
+                const normalizedData = ResumeProcessor.normalize(result.resumeData);
+                activeTabId = activeTab.id;
 
-                    chrome.tabs.sendMessage(activeTabId, { action: "ping_content" }, () => {
-                        if (chrome.runtime.lastError) {
-                            if (!/^https?:\/\//i.test(activeUrl)) {
-                                showStatus('Open a web page tab (http/https), then click Force Fill.', 'error');
-                                return;
-                            }
-
-                            chrome.runtime.sendMessage({ action: "ensure_content_script", tabId: activeTabId }, (ensureRes) => {
-                                if (chrome.runtime.lastError || !ensureRes || !ensureRes.ok) {
-                                    const host = safeHost(activeUrl);
-                                    showStatus(`Could not attach on ${host}. Refresh page and retry.`, 'error');
-                                    return;
-                                }
-                                triggerFill(activeTabId, result, normalizedData);
-                            });
+                chrome.tabs.sendMessage(activeTabId, { action: "ping_content" }, () => {
+                    if (chrome.runtime.lastError) {
+                        if (!/^https?:\/\//i.test(activeUrl)) {
+                            showStatus('Open a web page tab (http/https), then click Force Fill.', 'error');
                             return;
                         }
 
-                        triggerFill(activeTabId, result, normalizedData);
-                    });
+                        chrome.runtime.sendMessage({ action: "ensure_content_script", tabId: activeTabId }, (ensureRes) => {
+                            if (chrome.runtime.lastError || !ensureRes || !ensureRes.ok) {
+                                const host = safeHost(activeUrl);
+                                showStatus(`Could not attach on ${host}. Refresh page and retry.`, 'error');
+                                return;
+                            }
+                            triggerFill(activeTabId, result, normalizedData);
+                        });
+                        return;
+                    }
+
+                    triggerFill(activeTabId, result, normalizedData);
                 });
-            } else {
-                showStatus('No resume data found.', 'error');
-            }
+            });
         });
     });
 
-    // Apply queue: collect ATS links from the job table in the active tab (jobListingsIntegration.js)
     if (applyQueueBtn) {
         applyQueueBtn.addEventListener('click', () => {
             resolveTargetTab((tab) => {
@@ -448,25 +398,16 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (chrome.runtime.lastError) {
                             const url = tab.url || '';
                             if (!afterInject && /^https?:\/\//i.test(url)) {
-                                chrome.runtime.sendMessage(
-                                    { action: 'ensure_job_listings_script', tabId: tab.id },
-                                    (ensureRes) => {
-                                        if (chrome.runtime.lastError || !ensureRes || !ensureRes.ok) {
-                                            showStatus(
-                                                'Could not attach the job-table helper to this page. Refresh the tab, then try again.',
-                                                'error'
-                                            );
-                                            return;
-                                        }
-                                        setTimeout(() => sendCollectAndStartQueue(true), 150);
+                                chrome.runtime.sendMessage({ action: 'ensure_job_listings_script', tabId: tab.id }, (ensureRes) => {
+                                    if (chrome.runtime.lastError || !ensureRes || !ensureRes.ok) {
+                                        showStatus('Could not attach the job-table helper to this page. Refresh the tab, then try again.', 'error');
+                                        return;
                                     }
-                                );
+                                    setTimeout(() => sendCollectAndStartQueue(true), 150);
+                                });
                                 return;
                             }
-                            showStatus(
-                                'Open this site in a normal tab (http/https), refresh the page, then click Apply now again.',
-                                'error'
-                            );
+                            showStatus('Open this site in a normal tab (http/https), refresh the page, then click Apply now again.', 'error');
                             return;
                         }
                         finishApplyQueue(res);
@@ -478,22 +419,18 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // --- Queue Progress Polling ---
     let queuePollTimer = null;
-
     function startQueueProgressPolling() {
         stopQueueProgressPolling();
         updateQueueProgress();
         queuePollTimer = setInterval(updateQueueProgress, 2000);
     }
-
     function stopQueueProgressPolling() {
         if (queuePollTimer) {
             clearInterval(queuePollTimer);
             queuePollTimer = null;
         }
     }
-
     function updateQueueProgress() {
         chrome.runtime.sendMessage({ action: 'queue_status' }, (res) => {
             if (chrome.runtime.lastError || !res) {
@@ -508,7 +445,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (queueProgressPanel) queueProgressPanel.classList.remove('hidden');
             const idx = (res.index || 0) + 1;
             const total = res.total || 0;
-            // Match the "N / total" label: bar shows position in queue, not jobs completed
             const pct = total > 0 ? Math.round((idx / total) * 100) : 0;
             let host = '';
             try { host = new URL(res.currentUrl).hostname; } catch (_) { host = res.currentUrl || ''; }
@@ -517,7 +453,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (queueProgressBar) queueProgressBar.style.width = `${pct}%`;
         });
     }
-
     function hideQueueProgress() {
         if (queueProgressPanel) queueProgressPanel.classList.add('hidden');
         if (queueProgressBar) queueProgressBar.style.width = '0%';
@@ -549,42 +484,30 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Check if queue is already running on panel open
     updateQueueProgress();
     chrome.runtime.sendMessage({ action: 'queue_status' }, (res) => {
-        if (!chrome.runtime.lastError && res && res.running) {
-            startQueueProgressPolling();
-        }
+        if (!chrome.runtime.lastError && res && res.running) startQueueProgressPolling();
     });
 
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (request.action === 'fill_report') {
-            if (sender && sender.tab && sender.tab.id) {
-                activeTabId = sender.tab.id;
-            }
+            if (sender && sender.tab && sender.tab.id) activeTabId = sender.tab.id;
             renderSummaryTable(request.report);
             sendResponse({ status: 'ok' });
         }
     });
 
-    // Handle "Apply Edits" from the Side Panel
     applyEditsBtn.addEventListener('click', () => {
         const editedData = [];
         const rows = summaryTableBody.querySelectorAll('tr');
-
         rows.forEach(row => {
             const fieldId = row.dataset.fieldid;
             const input = row.querySelector('.edit-input');
-            if (fieldId && input && input.value !== undefined) {
-                editedData.push({ id: fieldId, value: input.value });
-            }
+            if (fieldId && input && input.value !== undefined) editedData.push({ id: fieldId, value: input.value });
         });
 
         if (activeTabId && editedData.length > 0) {
-            chrome.tabs.sendMessage(activeTabId, {
-                action: 'apply_edits',
-                edits: editedData
-            }, (response) => {
+            chrome.tabs.sendMessage(activeTabId, { action: 'apply_edits', edits: editedData }, (response) => {
                 if (chrome.runtime.lastError) {
                     showStatus('Could not apply edits. Refresh the page and retry.', 'error');
                     return;
@@ -601,8 +524,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     function renderSummaryTable(reportData) {
-        summaryTableBody.innerHTML = ''; // Clear previous
-
+        summaryTableBody.innerHTML = '';
         if (!reportData || reportData.length === 0) {
             summaryPanelContainer.classList.add('hidden');
             return;
@@ -611,23 +533,16 @@ document.addEventListener('DOMContentLoaded', () => {
         reportData.forEach(item => {
             const tr = document.createElement('tr');
             tr.dataset.fieldid = item.id;
-
-            // Field Label cell
             const tdLabel = document.createElement('td');
             tdLabel.textContent = item.label.substring(0, 20) + (item.label.length > 20 ? '...' : '');
             tdLabel.title = item.label;
-
-            // Edit Value cell
             const tdValue = document.createElement('td');
             const input = document.createElement('input');
             input.type = 'text';
             input.className = 'edit-input';
             input.value = item.value || '';
             tdValue.appendChild(input);
-
-            // Status Indicator cell
             const tdStatus = document.createElement('td');
-
             if (item.status === 'filled' || item.status === 'low_confidence' || item.status === 'unmatched_required') {
                 const badge = document.createElement('span');
                 if (item.status === 'filled') {
@@ -642,22 +557,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 tdStatus.appendChild(badge);
             }
-
             tr.appendChild(tdLabel);
             tr.appendChild(tdValue);
             tr.appendChild(tdStatus);
             summaryTableBody.appendChild(tr);
         });
-
         summaryPanelContainer.classList.remove('hidden');
     }
 
-    // Toggle Preview
     viewResumeBtn.addEventListener('click', () => {
         resumePreview.classList.toggle('hidden');
-        viewResumeBtn.textContent = resumePreview.classList.contains('hidden')
-            ? 'View Stored Data'
-            : 'Hide Data';
+        viewResumeBtn.textContent = resumePreview.classList.contains('hidden') ? 'View Stored Data' : 'Hide Data';
     });
 
     function validateResumeSchema(json) {
@@ -669,12 +579,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!json.basics.name) warnings.push('Missing basics.name');
         if (!json.basics.email) warnings.push('Missing basics.email');
         if (!json.basics.phone) warnings.push('Missing basics.phone');
-        if (!json.work || !Array.isArray(json.work) || json.work.length === 0) {
-            warnings.push('No work experience entries');
-        }
-        if (!json.skills || !Array.isArray(json.skills) || json.skills.length === 0) {
-            warnings.push('No skills entries');
-        }
+        if (!json.work || !Array.isArray(json.work) || json.work.length === 0) warnings.push('No work experience entries');
+        if (!json.skills || !Array.isArray(json.skills) || json.skills.length === 0) warnings.push('No skills entries');
         return warnings;
     }
 
@@ -682,9 +588,7 @@ document.addEventListener('DOMContentLoaded', () => {
         statusDiv.textContent = msg;
         statusDiv.className = `status-message status-${type}`;
         statusDiv.classList.remove('hidden');
-        setTimeout(() => {
-            statusDiv.classList.add('hidden');
-        }, 3000);
+        setTimeout(() => statusDiv.classList.add('hidden'), 3000);
     }
 
     function enableButtons() {
@@ -695,27 +599,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function updatePreview(data) {
         const normalized = ResumeProcessor.normalize(data);
-        resumeContent.textContent = JSON.stringify({
-            _normalized: normalized,
-            _raw: data
-        }, null, 2);
+        resumeContent.textContent = JSON.stringify({ _normalized: normalized, _raw: data }, null, 2);
     }
 
     function triggerFill(tabId, storageResult, normalizedData) {
         chrome.tabs.sendMessage(tabId, {
             action: "fill_form",
             data: storageResult.resumeData,
-            normalizedData: normalizedData,
+            normalizedData,
             aiEnabled: storageResult.aiEnabled || false,
             manual: true
         }, (response) => {
             if (chrome.runtime.lastError) {
                 showStatus('Could not start fill on this page. Refresh and retry.', 'error');
             } else if (response && response.status === 'skipped') {
-                showStatus(
-                    'Force Fill was skipped on this page (e.g. job search table or internal dashboard). Click the tab that shows the real application form, then Force Fill again.',
-                    'error'
-                );
+                showStatus('Force Fill was skipped on this page. Click the actual application form tab and retry.', 'error');
             } else {
                 showStatus('Form filling initiated!', 'success');
             }
@@ -730,11 +628,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    /**
-     * Prefer the tab the user is actually viewing (active tab in this window).
-     * Using only "last ATS heartbeat" sent Force Fill to the wrong tab (e.g. job listings
-     * instead of the apply form), which produced skipped / confusing errors.
-     */
     function resolveTargetTab(callback) {
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
             const active = tabs && tabs[0];
@@ -765,7 +658,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 callback(tabs[0]);
                 return;
             }
-
             chrome.tabs.query({ lastFocusedWindow: true }, (allTabs) => {
                 const candidate = (allTabs || []).find((t) => t.active && /^https?:\/\//i.test(t.url || ''))
                     || (allTabs || []).find((t) => /^https?:\/\//i.test(t.url || ''));

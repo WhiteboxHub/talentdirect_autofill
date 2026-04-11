@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AutoFill Job Applications",
-  "version": "1.1",
+  "version": "1.2",
   "description": "Auto-fills job application forms and generates AI answers.",
   "permissions": [
     "storage",
@@ -15,7 +15,7 @@
     "service_worker": "background.js"
   },
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' http://localhost:11434;"
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' http://localhost:11434 https://api.openai.com;"
   },
   "host_permissions": [
     "*://*.adp.com/*",
@@ -51,7 +51,8 @@
     "https://boards.greenhouse.io/*",
     "https://jobs.lever.co/*",
     "https://mongodb.com/*",
-    "https://*.mongodb.com/*"
+    "https://*.mongodb.com/*",
+    "https://api.openai.com/*"
   ],
   "action": {
     "default_title": "Open side panel"
