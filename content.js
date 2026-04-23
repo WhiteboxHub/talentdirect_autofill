@@ -116,3 +116,60 @@ function fillForm(normalizedData, aiEnabled, isManualTrigger = false) {
     const strategy = ATSStrategyRegistry.getStrategy(window.location.href, document);
     strategy.execute(normalizedData, aiEnabled);
 }
+
+// ==========================================
+// CLI Bridge Integration
+// ==========================================
+window.addEventListener('JOBCLI_START_FILL', async (event) => {
+    console.log("AutoFill: Received JOBCLI_START_FILL from Playwright.");
+    try {
+        const response = await fetch("http://127.0.0.1:8080/api/v1/context").catch(() => null);
+        
+        if (!response || !response.ok) {
+            console.warn("AutoFill: CLI server not reachable or returned error. Falling back to cached data if any.");
+            attemptAutoFill();
+            window.dispatchEvent(new CustomEvent('JOBCLI_FILL_COMPLETE', { detail: { error: "Fetch failed" } }));
+            return;
+        }
+        
+        const data = await response.json();
+        
+        await chrome.storage.local.set({ 
+            cli_resume: data.resume,
+            cli_memory: data.memory,
+            normalizedData: data.resume 
+        });
+
+        console.log("AutoFill: Successfully fetched and cached CLI context.");
+
+        // Execute Autofill
+        fillForm(data.resume, true, true);
+        
+        // Wait a bit for async DOM changes (React updates)
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        // Generate MVP fillReport
+        const report = {
+            url: window.location.href,
+            success_count: Object.keys(data.resume?.personal || {}).length, // simple proxy for MVP
+            failure_count: 0,
+            fields_filled: data.resume?.personal || {},
+            unfilled_fields: []
+        };
+
+        // Send Feedback to CLI
+        await fetch("http://127.0.0.1:8080/api/v1/report", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(report)
+        });
+
+        console.log("AutoFill: Sent fillReport to CLI.");
+        
+        window.dispatchEvent(new CustomEvent('JOBCLI_FILL_COMPLETE'));
+        
+    } catch (err) {
+        console.error("AutoFill CLI Integration Error:", err);
+        window.dispatchEvent(new CustomEvent('JOBCLI_FILL_COMPLETE', { detail: { error: err.message } }));
+    }
+});
