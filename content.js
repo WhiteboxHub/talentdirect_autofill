@@ -133,11 +133,9 @@ function isJobPage() {
         'linkedin.com/jobs', 'recruitee', 'personio', 'teamtailor', 'workable'
     ];
 
-    // Check URL
     const matchedUrl = jobKeywords.find(k => url.includes(k));
     if (matchedUrl) return true;
 
-    // Check for common form fields that indicate an application
     const jobFieldIndicators = [
         'resume', 'cv', 'cover_letter', 'linkedin_profile', 'phone_number',
         'years_of_experience', 'work_authorization', 'sponsorship'
@@ -217,7 +215,6 @@ async function fillForm(data, manual = false, resume = null, queue = false, idx 
         const strategy = ATSStrategyRegistry.getStrategy(window.location.href, document);
         if (strategy) await strategy.execute(data, false, resume);
 
-        // Apply persistent manual edits after strategy execution
         if (manualEdits && Object.keys(manualEdits).length > 0) {
             const editsArray = Object.entries(manualEdits).map(([id, value]) => ({ id, value }));
             applyEdits(editsArray);
@@ -230,7 +227,7 @@ async function fillForm(data, manual = false, resume = null, queue = false, idx 
 }
 
 function injectAutoRunOverlay(idx, total, queue = false) {
-    if (window.self !== window.top) return; // Only inject in top window
+    if (window.self !== window.top) return; 
     const doc = document;
     const id = 'autofill-premium-overlay';
     let el = doc.getElementById(id);
@@ -264,7 +261,6 @@ function injectAutoRunOverlay(idx, total, queue = false) {
     `;
     doc.head.appendChild(style);
 
-    // Build Header
     const header = doc.createElement('div');
     header.className = 'af-h';
     const titleSpan = doc.createElement('span');
@@ -274,7 +270,6 @@ function injectAutoRunOverlay(idx, total, queue = false) {
     badgeSpan.textContent = `${(idx || 0) + 1} / ${total || '?'}`;
     header.append(titleSpan, badgeSpan);
 
-    // Build Buttons
     const btnContainer = doc.createElement('div');
     btnContainer.className = 'af-btns';
 
@@ -296,10 +291,8 @@ function injectAutoRunOverlay(idx, total, queue = false) {
 
     btnContainer.append(fillBtn, stopBtn, nextBtn);
     el.append(header, btnContainer);
-
     doc.body.appendChild(el);
 
-    // Load saved position
     chrome.storage.local.get(['overlayPos'], (res) => {
         if (res.overlayPos) {
             el.style.setProperty('bottom', 'auto', 'important');
@@ -309,17 +302,13 @@ function injectAutoRunOverlay(idx, total, queue = false) {
         }
     });
 
-    // Make Draggable
     let isDragging = false;
     let offset = { x: 0, y: 0 };
 
     header.onmousedown = (e) => {
         isDragging = true;
         const rect = el.getBoundingClientRect();
-        offset = {
-            x: e.clientX - rect.left,
-            y: e.clientY - rect.top
-        };
+        offset = { x: e.clientX - rect.left, y: e.clientY - rect.top };
         e.preventDefault();
     };
 
@@ -359,14 +348,6 @@ function setupOverlayListeners(el, queue) {
     };
 }
 
-function showToast(msg, type = 'info') {
-    const t = document.createElement('div');
-    t.style.cssText = `position:fixed; top:20px; right:20px; z-index:2147483647; background:${type === 'error' ? '#ef4444' : 'rgba(0,0,0,0.8)'}; color:white; padding:10px 20px; border-radius:12px; font-family:sans-serif; font-size:13px; box-shadow: 0 4px 12px rgba(0,0,0,0.2);`;
-    t.textContent = msg;
-    document.body.appendChild(t);
-    setTimeout(() => t.remove(), type === 'error' ? 6000 : 3000);
-}
-
 function extractJobMetadata() {
     let company = "", role = "";
     const gC = document.querySelector('.company-name'), gR = document.querySelector('.app-title');
@@ -390,15 +371,62 @@ function extractJobDescription() {
     for (const s of ss) {
         const e = document.querySelector(s);
         if (e && e.innerText.trim().length > 300) {
-            // Remove scripts, styles and other junk from innerText if possible
             const clone = e.cloneNode(true);
             clone.querySelectorAll('script, style, nav, footer, header').forEach(n => n.remove());
             const text = clone.innerText.trim();
             if (text.length > 300) return text.substring(0, 5000);
         }
     }
-    // Fallback to body but try to find the largest text container
     return document.body.innerText.substring(0, 5000);
 }
 
-// --- AI Modal Functions Removed ---
+// ==========================================
+// CLI Bridge Integration
+// ==========================================
+window.addEventListener('JOBCLI_START_FILL', async (event) => {
+    console.log("AutoFill: Received JOBCLI_START_FILL from Playwright.");
+    try {
+        const response = await fetch("http://127.0.0.1:8080/api/v1/context").catch(() => null);
+        
+        if (!response || !response.ok) {
+            console.warn("AutoFill: CLI server not reachable. Falling back to cached data.");
+            attemptAutoFill();
+            window.dispatchEvent(new CustomEvent('JOBCLI_FILL_COMPLETE', { detail: { error: "Fetch failed" } }));
+            return;
+        }
+        
+        const data = await response.json();
+        
+        await chrome.storage.local.set({ 
+            cli_resume: data.resume,
+            cli_memory: data.memory,
+            normalizedData: data.resume 
+        });
+
+        console.log("AutoFill: Successfully fetched and cached CLI context.");
+
+        await fillForm(data.resume, true, true);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        const report = {
+            url: window.location.href,
+            success_count: Object.keys(data.resume?.personal || {}).length,
+            failure_count: 0,
+            fields_filled: data.resume?.personal || {},
+            unfilled_fields: []
+        };
+
+        await fetch("http://127.0.0.1:8080/api/v1/report", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(report)
+        });
+
+        console.log("AutoFill: Sent fillReport to CLI.");
+        window.dispatchEvent(new CustomEvent('JOBCLI_FILL_COMPLETE'));
+        
+    } catch (err) {
+        console.error("AutoFill CLI Integration Error:", err);
+        window.dispatchEvent(new CustomEvent('JOBCLI_FILL_COMPLETE', { detail: { error: err.message } }));
+    }
+});
