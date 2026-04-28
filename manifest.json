@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "AutoFill Job Applications",
+  "name": "talentdirect_autofill",
   "version": "1.2",
   "description": "Auto-fills job application forms and generates AI answers.",
   "author": "Sampath Velupula, Ravi Kumar Rayapalli, Jafar vali, Ramana gangarao, Bavish Kangari, jatin Thakur",
